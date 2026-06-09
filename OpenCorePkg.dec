@@ -911,6 +911,9 @@
   OcCpuLib|Include/Acidanthera/Library/OcCpuLib.h
 
   ##  @libraryclass
+  OcDbtLib|Include/Acidanthera/Library/OcDbtLib.h
+
+  ##  @libraryclass
   OcCryptoLib|Include/Acidanthera/Library/OcCryptoLib.h
 
   ##  @libraryclass

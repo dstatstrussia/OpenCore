@@ -98,6 +98,7 @@
   OcConsoleLib|OpenCorePkg/Library/OcConsoleLib/OcConsoleLib.inf
   OcCpuLib|OpenCorePkg/Library/OcCpuLib/OcCpuLib.inf
   OcCryptoLib|OpenCorePkg/Library/OcCryptoLib/OcCryptoLib.inf
+  OcDbtLib|OpenCorePkg/Library/OcDbtLib/OcDbtLib.inf
   OcDataHubLib|OpenCorePkg/Library/OcDataHubLib/OcDataHubLib.inf
   OcDeviceMiscLib|OpenCorePkg/Library/OcDeviceMiscLib/OcDeviceMiscLib.inf
   OcDevicePathLib|OpenCorePkg/Library/OcDevicePathLib/OcDevicePathLib.inf
@@ -314,6 +315,7 @@
   OpenCorePkg/Legacy/BootPlatform/BiosVideo/BiosVideo.inf
   OpenCorePkg/Platform/CrScreenshotDxe/CrScreenshotDxe.inf
   OpenCorePkg/Platform/OpenCanopy/OpenCanopy.inf
+  OpenCorePkg/Platform/OpenDbvX64Dxe/OpenDbvX64Dxe.inf
   OpenCorePkg/Platform/OpenLegacyBoot/OpenLegacyBoot.inf
   OpenCorePkg/Platform/OpenLinuxBoot/OpenLinuxBoot.inf
   OpenCorePkg/Platform/OpenNetworkBoot/OpenNetworkBoot.inf
