@@ -511,40 +511,39 @@ if [ "$(unamer)" = "Windows" ]; then
   fi
   cd - || exit 1
   export VS2022_PREFIX="${VS2022_BASEPREFIX}${VS2022_DIR}\\"
-
-WINSDK_BASE="/c/Program Files (x86)/Windows Kits/10/bin"
-   if [ -d "${WINSDK_BASE}" ]; then
-     for dir in "${WINSDK_BASE}"/*/; do
-       if [ -f "${dir}x86/rc.exe" ]; then
-         WINSDK_PATH_FOR_RC_EXE="${dir}x86"
-         WINSDK_PATH_FOR_RC_EXE="${WINSDK_PATH_FOR_RC_EXE//\//\\}"
-         WINSDK_PATH_FOR_RC_EXE="${WINSDK_PATH_FOR_RC_EXE/\\c\\/C:\\}"
-         break
-       fi
-     done
-   fi
-   if [ "${WINSDK_PATH_FOR_RC_EXE}" != "" ]; then
-     export WINSDK_PATH_FOR_RC_EXE
-   else
-     echo "Failed to find rc.exe"
-     exit 1
-   fi
-   BASE_TOOLS="$(pwd)/BaseTools"
-   # Extract header paths for cl.exe to work.
-   # Note: distutils.msvc9compiler was removed in Python 3.12, use VsDevCmd.bat instead
-if command -v powershell >/dev/null 2>&1; then
-      # Use PowerShell to get Visual Studio environment
-      # Write PowerShell script to temp file to avoid quoting issues
-      powershell_script=$(mktemp)
-      cat > "$powershell_script" << 'EOFSCRIPT'
-      param($vsPath)
-      cmd /c "`"${vsPath}\Common7\Tools\VsDevCmd.bat`" -arch=amd64 > nul 2>&1 && set" | ForEach-Object { "export $($_.Split('=',2)[0])=$(($_.Split('=',2)[1] -replace '\\','/'))" }
+  WINSDK_BASE="/c/Program Files (x86)/Windows Kits/10/bin"
+  if [ -d "${WINSDK_BASE}" ]; then
+    for dir in "${WINSDK_BASE}"/*/; do
+      if [ -f "${dir}x86/rc.exe" ]; then
+        WINSDK_PATH_FOR_RC_EXE="${dir}x86"
+        WINSDK_PATH_FOR_RC_EXE="${WINSDK_PATH_FOR_RC_EXE//\//\\}"
+        WINSDK_PATH_FOR_RC_EXE="${WINSDK_PATH_FOR_RC_EXE/\\c\\/C:\\}"
+        break
+      fi
+    done
+  fi
+  if [ "${WINSDK_PATH_FOR_RC_EXE}" != "" ]; then
+    export WINSDK_PATH_FOR_RC_EXE
+  else
+    echo "Failed to find rc.exe"
+    exit 1
+  fi
+  BASE_TOOLS="$(pwd)/BaseTools"
+  export PATH="${BASE_TOOLS}/Bin/Win32:${BASE_TOOLS}/BinWrappers/WindowsLike:$PATH"
+  # Extract header paths for cl.exe to work.
+  # Note: distutils.msvc9compiler was removed in Python 3.12, use VsDevCmd.bat instead
+  if command -v powershell >/dev/null 2>&1; then
+    # Use PowerShell to get Visual Studio environment
+    powershell_script=$(mktemp)
+    cat > "$powershell_script" << 'EOFSCRIPT'
+param($vsPath)
+$output = cmd /c "`"${vsPath}\Common7\Tools\VsDevCmd.bat`" -arch=amd64 > nul 2>&1 && set"
+$output | Where-Object { $_ -match '^PATH=|^INCLUDE=|^LIB=' } | ForEach-Object { "export $($_.Split('=',2)[0])=$($_.Split('=',2)[1].Trim())" }
 EOFSCRIPT
-      eval "$(powershell -File "$powershell_script" -vsPath "$VS2022_BUILDTOOLS" 2>/dev/null) || true"
-      rm -f "$powershell_script"
-    fi
-   export PATH="${BASE_TOOLS}/Bin/Win32:${BASE_TOOLS}/BinWrappers/WindowsLike:$PATH"
- fi
+    eval "$(powershell -File "$powershell_script" -vsPath "$VS2022_BUILDTOOLS" 2>/dev/null) || true"
+    rm -f "$powershell_script"
+  fi
+fi
 
 if [ "$NEW_BUILDSYSTEM" != "1" ]; then
   if [ "$SKIP_TESTS" != "1" ]; then
