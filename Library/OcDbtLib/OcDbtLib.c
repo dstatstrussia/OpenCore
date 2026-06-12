@@ -308,6 +308,9 @@ DbtFreeContext (
   )
 {
   if (Context != NULL) {
+    if (Context->VmContext.MemoryPool != NULL) {
+      gBS->FreePages ((UINTN)Context->VmContext.MemoryPool, Context->VmContext.FreePages);
+    }
     gBS->FreePages ((UINTN)Context, EFI_SIZE_TO_PAGES (sizeof (DBT_CONTEXT) + Context->CodeCapacity));
   }
 }
