@@ -122,7 +122,7 @@ symlink() {
       fi
     done
     # Copy root-level package files to OpenCorePkg directory
-    for f in "$1"/*.dsc "$1"/*.fdf "$1"/*.dec ; do
+    for f in "$1"/*.dsc "$1"/*.fdf "$1"/*.dec "$1"/*.fdf.inc ; do
       if [ -f "${f}" ]; then
         cp "${f}" "$2/" || exit 1
       fi
@@ -496,9 +496,13 @@ if [ "$(unamer)" = "Windows" ]; then
   BASE_TOOLS="$(pwd)/BaseTools"
   export PATH="${BASE_TOOLS}/Bin/Win32:${BASE_TOOLS}/BinWrappers/WindowsLike:$PATH"
   # Extract header paths for cl.exe to work.
+  # Note: distutils was removed in Python 3.12, use setuptools instead
   eval "$(python -c '
 import sys, os, subprocess
-import distutils.msvc9compiler as msvc
+try:
+    import setuptools._distutils.msvc9compiler as msvc
+except ImportError:
+    import distutils.msvc9compiler as msvc
 msvc.find_vcvarsall=lambda _: sys.argv[1]
 envs=msvc.query_vcvarsall(sys.argv[2])
 for k,v in envs.items():
