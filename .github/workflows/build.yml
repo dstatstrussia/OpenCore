@@ -156,6 +156,7 @@ jobs:
     runs-on: windows-latest
     env:
       HAS_OPENSSL_BUILD: 0
+      CC: gcc
     defaults:
       run:
         shell: bash
@@ -164,9 +165,9 @@ jobs:
       - uses: TheMrMilchmann/setup-msvc-dev@v4
         with:
           arch: x86
-      - name: Install Python setuptools
+      - name: Install Dependencies
         run: |
-          python -m pip install setuptools --quiet --force-reinstall
+          choco install make nasm zip iasl --no-progress
 
       - name: CI Bootstrap
         run: |
