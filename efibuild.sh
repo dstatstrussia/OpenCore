@@ -512,42 +512,32 @@ if [ "$(unamer)" = "Windows" ]; then
   cd - || exit 1
   export VS2022_PREFIX="${VS2022_BASEPREFIX}${VS2022_DIR}\\"
 
-  WINSDK_BASE="/c/Program Files (x86)/Windows Kits/10/bin"
-  if [ -d "${WINSDK_BASE}" ]; then
-    for dir in "${WINSDK_BASE}"/*/; do
-      if [ -f "${dir}x86/rc.exe" ]; then
-        WINSDK_PATH_FOR_RC_EXE="${dir}x86"
-        WINSDK_PATH_FOR_RC_EXE="${WINSDK_PATH_FOR_RC_EXE//\//\\}"
-        WINSDK_PATH_FOR_RC_EXE="${WINSDK_PATH_FOR_RC_EXE/\\c\\/C:\\}"
-        break
-      fi
-    done
-  fi
-  if [ "${WINSDK_PATH_FOR_RC_EXE}" != "" ]; then
-    export WINSDK_PATH_FOR_RC_EXE
-  else
-    echo "Failed to find rc.exe"
-    exit 1
-  fi
-  BASE_TOOLS="$(pwd)/BaseTools"
-  export PATH="${BASE_TOOLS}/Bin/Win32:${BASE_TOOLS}/BinWrappers/WindowsLike:$PATH"
-  # Extract header paths for cl.exe to work.
-  # Note: distutils was removed in Python 3.12, use setuptools instead
-  eval "$(python -c '
-import sys, os, subprocess
-try:
-    import setuptools._distutils.msvc9compiler as msvc
-except ImportError:
-    import distutils.msvc9compiler as msvc
-msvc.find_vcvarsall=lambda _: sys.argv[1]
-envs=msvc.query_vcvarsall(sys.argv[2])
-for k,v in envs.items():
-    k = k.upper()
-    v = ":".join(subprocess.check_output(["cygpath","-u",p]).decode("ascii").rstrip() for p in v.split(";"))
-    v = v.replace("'\''",r"'\'\\\'\''")
-    print("export %(k)s='\''%(v)s'\''" % locals())
-' "${VS2022_BUILDTOOLS}\\Common7\\Tools\\VsDevCmd.bat" '-arch=amd64')"
-fi
+WINSDK_BASE="/c/Program Files (x86)/Windows Kits/10/bin"
+   if [ -d "${WINSDK_BASE}" ]; then
+     for dir in "${WINSDK_BASE}"/*/; do
+       if [ -f "${dir}x86/rc.exe" ]; then
+         WINSDK_PATH_FOR_RC_EXE="${dir}x86"
+         WINSDK_PATH_FOR_RC_EXE="${WINSDK_PATH_FOR_RC_EXE//\//\\}"
+         WINSDK_PATH_FOR_RC_EXE="${WINSDK_PATH_FOR_RC_EXE/\\c\\/C:\\}"
+         break
+       fi
+     done
+   fi
+   if [ "${WINSDK_PATH_FOR_RC_EXE}" != "" ]; then
+     export WINSDK_PATH_FOR_RC_EXE
+   else
+     echo "Failed to find rc.exe"
+     exit 1
+   fi
+   BASE_TOOLS="$(pwd)/BaseTools"
+   # Extract header paths for cl.exe to work.
+   # Note: distutils.msvc9compiler was removed in Python 3.12, use VsDevCmd.bat instead
+   if command -v powershell >/dev/null 2>&1; then
+     # Use PowerShell to get Visual Studio environment
+     eval "$(powershell -Command "& '${VS2022_BUILDTOOLS}\\Common7\\Tools\\VsDevCmd.bat' -arch=amd64 > $null; Get-ChildItem Env: | Where-Object { $_.Name -in 'PATH','INCLUDE','LIB' } | ForEach-Object { 'export ' + $_.Name + '=\"' + ($_.Value -replace '\\\\','/') + '\"' }")" 2>/dev/null || true
+   fi
+   export PATH="${BASE_TOOLS}/Bin/Win32:${BASE_TOOLS}/BinWrappers/WindowsLike:$PATH"
+ fi
 
 if [ "$NEW_BUILDSYSTEM" != "1" ]; then
   if [ "$SKIP_TESTS" != "1" ]; then
