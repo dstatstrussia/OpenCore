@@ -496,7 +496,6 @@ if [ "$(unamer)" = "Windows" ]; then
   BASE_TOOLS="$(pwd)/BaseTools"
   export PATH="${BASE_TOOLS}/Bin/Win32:${BASE_TOOLS}/BinWrappers/WindowsLike:$PATH"
   # Extract header paths for cl.exe to work.
-  # Note: distutils was removed in Python 3.12, use setuptools instead
   eval "$(python -c '
 import sys, os, subprocess
 try:
