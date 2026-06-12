@@ -145,9 +145,14 @@ unamer() {
 echo "Building on $(unamer)"
 
 if [ "$(unamer)" = "Windows" ]; then
-  cmd <<< 'chcp 437'
-  export PYTHON_COMMAND="python"
-fi
+   cmd <<< 'chcp 437'
+   export PYTHON_COMMAND="python"
+   # Ensure setuptools is installed for Python 3.12+
+   if ! python -c "import setuptools._distutils" 2>/dev/null; then
+     echo "Installing setuptools for Python 3.12 compatibility..."
+     python -m pip install setuptools --quiet --force-reinstall
+   fi
+ fi
 
 if [ "${SELFPKG}" = "" ]; then
   echo "You are required to set SELFPKG variable!"
