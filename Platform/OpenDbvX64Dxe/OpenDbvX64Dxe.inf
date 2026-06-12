@@ -32,20 +32,21 @@
   MdePkg/MdePkg.dec
 
 [LibraryClasses]
-   BaseLib
-   BaseMemoryLib
-   DebugLib
-   DevicePathLib
-   MemoryAllocationLib
-   UefiLib
-   UefiBootServicesTableLib
-   UefiDriverEntryPoint
-   OcBootManagementLib
-   OcDbtLib
+  BaseLib
+  BaseMemoryLib
+  DebugLib
+  DevicePathLib
+  MemoryAllocationLib
+  PrintLib
+  UefiLib
+  UefiBootServicesTableLib
+  UefiDriverEntryPoint
+  OcBootManagementLib
+  OcDbtLib
 
 [Protocols]
-   gEfiSimpleFileSystemProtocolGuid
-   gOcBootEntryProtocolGuid
+  gEfiSimpleFileSystemProtocolGuid
+  gOcBootEntryProtocolGuid
 
 [Depex]
   TRUE
