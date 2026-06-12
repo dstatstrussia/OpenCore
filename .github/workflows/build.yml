@@ -167,7 +167,8 @@ jobs:
           arch: x86
       - name: Install Dependencies
         run: |
-          choco install make nasm zip iasl --no-progress
+          choco install make zip iasl --no-progress
+          choco install nasm --version 2.15.05 --no-progress
 
       - name: CI Bootstrap
         run: |
