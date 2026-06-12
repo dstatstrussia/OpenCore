@@ -5,6 +5,7 @@
 **/
 
 #include <Uefi.h>
+#include <Guid/FileInfo.h>
 #include <Library/BaseLib.h>
 #include <Library/BaseMemoryLib.h>
 #include <Library/DebugLib.h>
@@ -67,15 +68,15 @@ OcGetDbtBootEntries (
   EntryCount = 0;
 
   //
-  // Look for macOS Installer (com.apple.installer) in boot directories
+  // Look for macOS Installer (com.apple.installer or com.apple.MobileAsset) in boot directories
   //
   Status = RootDirectory->Open (
-                          RootDirectory,
-                          &BootDirectory,
-                          L"\\System\\Library\\CoreServices\\com.apple.installer",
-                          EFI_FILE_MODE_READ,
-                          0
-                          );
+                           RootDirectory,
+                           &BootDirectory,
+                           L"\\System\\Library\\CoreServices\\com.apple.installer",
+                           EFI_FILE_MODE_READ,
+                           0
+                           );
 
   if (!EFI_ERROR (Status)) {
     Status = EFI_NOT_FOUND;
@@ -94,6 +95,38 @@ OcGetDbtBootEntries (
       }
     }
     BootDirectory->Close (BootDirectory);
+  }
+
+  //
+  // Also look for macOS 27+ installer (com.apple.MobileAsset) in SharedSupport
+  //
+  if (EntryCount == 0) {
+    Status = RootDirectory->Open (
+                             RootDirectory,
+                             &BootDirectory,
+                             L"\\SharedSupport\\com_apple_MobileAsset_MacSoftwareUpdate",
+                             EFI_FILE_MODE_READ,
+                             0
+                             );
+
+    if (!EFI_ERROR (Status)) {
+      Status = EFI_NOT_FOUND;
+
+      FileInfoSize = 0;
+      BootDirectory->GetInfo (BootDirectory, &gEfiFileInfoGuid, &FileInfoSize, NULL);
+      if (FileInfoSize > 0) {
+        Status = EFI_SUCCESS;
+        FileInfo = AllocatePool (FileInfoSize);
+        if (FileInfo != NULL) {
+          BootDirectory->GetInfo (BootDirectory, &gEfiFileInfoGuid, &FileInfoSize, FileInfo);
+          if ((FileInfo->Attribute & EFI_FILE_DIRECTORY) != 0) {
+            ++EntryCount;
+          }
+          FreePool (FileInfo);
+        }
+      }
+      BootDirectory->Close (BootDirectory);
+    }
   }
 
   RootDirectory->Close (RootDirectory);

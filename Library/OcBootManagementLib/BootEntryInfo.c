@@ -761,7 +761,8 @@ InternalDescribeBootEntry (
   }
 
   // TODO: Should macOS installer have own OC_BOOT_ENTRY_TYPE (plus own voiceover file?)?
-  BootEntry->IsAppleInstaller = (StrStr (BootDirectoryName, L"com.apple.installer") != NULL);
+  BootEntry->IsAppleInstaller = (StrStr (BootDirectoryName, L"com.apple.installer") != NULL)
+                                || (StrStr (BootDirectoryName, L"com.apple.MobileAsset") != NULL);
   if (BootEntry->Name == NULL) {
     //
     // Special case - installer should be clearly identified to end users but does not normally
