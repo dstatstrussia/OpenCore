@@ -4,6 +4,7 @@ unset WORKSPACE
 unset PACKAGES_PATH
 
 BUILDDIR=$(pwd)
+ROOTDIR="$BUILDDIR"
 
 if [ "$NEW_BUILDSYSTEM" = "" ]; then
   NEW_BUILDSYSTEM=0
@@ -533,15 +534,22 @@ if [ "$(unamer)" = "Windows" ]; then
   # Extract header paths for cl.exe to work.
   # Note: distutils.msvc9compiler was removed in Python 3.12, use VsDevCmd.bat instead
   if command -v powershell >/dev/null 2>&1; then
-    # Use PowerShell to get Visual Studio environment
-    powershell_script=$(mktemp)
-    cat > "$powershell_script" << 'EOFSCRIPT'
-param($vsPath)
-$output = cmd /c "`"${vsPath}\Common7\Tools\VsDevCmd.bat`" -arch=amd64 > nul 2>&1 && set"
-$output | Where-Object { $_ -match '^PATH=|^INCLUDE=|^LIB=' } | ForEach-Object { "export $($_.Split('=',2)[0])=$($_.Split('=',2)[1].Trim())" }
-EOFSCRIPT
-    eval "$(powershell -File "$powershell_script" -vsPath "$VS2022_BUILDTOOLS" 2>/dev/null) || true"
-    rm -f "$powershell_script"
+    ps_env_file=$(mktemp)
+    # Check VS2022_BUILDTOOLS is set before running PowerShell
+    if [ -n "$VS2022_BUILDTOOLS" ] && [ -f "${ROOTDIR}/Utilities/get_vs_env.ps1" ]; then
+      powershell -NoProfile -File "${ROOTDIR}/Utilities/get_vs_env.ps1" -vsPath "$VS2022_BUILDTOOLS" -outFile "$ps_env_file" 2>/dev/null || true
+    fi
+    if [ -s "$ps_env_file" ]; then
+      while IFS='=' read -r k v; do
+        if [ -n "$k" ] && [ "$k" = "PATH" ]; then
+          # Prepend VS PATH to existing PATH to ensure MSVC tools come first
+          export "PATH=${v}:${PATH}"
+        elif [ -n "$k" ]; then
+          export "$k=$v"
+        fi
+      done < "$ps_env_file"
+      rm -f "$ps_env_file"
+    fi
   fi
 fi
 
