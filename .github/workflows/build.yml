@@ -168,6 +168,7 @@ jobs:
       - name: Install Dependencies
         run: |
           choco install make nasm zip iasl --no-progress
+          python -m pip install setuptools --quiet --force-reinstall
 
       - name: CI Bootstrap
         run: |
