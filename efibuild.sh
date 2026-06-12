@@ -446,7 +446,7 @@ fi
 
 . ./edksetup.sh || exit 1
 
-if [ "$(unamer)" = "Windows" ]; then
+if [ "$(unamer)" = "Windows" ] && [ "${TOOLCHAINS[0]}" != "CLANGPDB" ] && [ "${TOOLCHAINS[0]}" != "CLANGDWARF" ]; then
   # Configure Visual Studio environment. Requires:
   # 1. choco install vswhere microsoft-build-tools visualcpp-build-tools nasm zip
   # 2. iasl in PATH for MdeModulePkg
@@ -515,7 +515,7 @@ fi
 if [ "$NEW_BUILDSYSTEM" != "1" ]; then
   if [ "$SKIP_TESTS" != "1" ]; then
     echo "Testing..."
-    if [ "$(unamer)" = "Windows" ]; then
+    if [ "$(unamer)" = "Windows" ] && [ "${TOOLCHAINS[0]}" != "CLANGPDB" ] && [ "${TOOLCHAINS[0]}" != "CLANGDWARF" ]; then
       # Normal build similar to Unix.
       cd BaseTools || exit 1
       nmake        || exit 1
