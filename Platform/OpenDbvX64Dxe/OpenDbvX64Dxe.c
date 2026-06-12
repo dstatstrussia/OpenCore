@@ -106,9 +106,9 @@ OcGetDbtBootEntries (
 
     ZeroMem (NewEntries, sizeof (OC_PICKER_ENTRY) * EntryCount);
 
-    NewEntries[0].Id      = "macOS-Installer";
-    NewEntries[0].Name    = "macOS Installer (Translated)";
-    NewEntries[0].Flavour = "OpenDbt";
+    NewEntries[0].Id = AllocateCopyPool (AsciiStrSize ("macOS-Installer"), "macOS-Installer");
+    NewEntries[0].Name = AllocateCopyPool (AsciiStrSize ("macOS Installer (Translated)"), "macOS Installer (Translated)");
+    NewEntries[0].Flavour = AllocateCopyPool (AsciiStrSize ("OpenDbt"), "OpenDbt");
 
     *Entries    = NewEntries;
     *NumEntries = EntryCount;
@@ -134,10 +134,13 @@ OcFreeDbtBootEntries (
 
   for (Index = 0; Index < NumEntries; Index++) {
     if ((*Entries)[Index].Id != NULL) {
-      FreePool ((CHAR8 *)(*Entries)[Index].Id);
+      FreePool ((VOID *)(UINTN)(*Entries)[Index].Id);
     }
     if ((*Entries)[Index].Name != NULL) {
-      FreePool ((CHAR8 *)(*Entries)[Index].Name);
+      FreePool ((VOID *)(UINTN)(*Entries)[Index].Name);
+    }
+    if ((*Entries)[Index].Flavour != NULL) {
+      FreePool ((VOID *)(UINTN)(*Entries)[Index].Flavour);
     }
   }
 
