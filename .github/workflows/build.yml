@@ -152,23 +152,16 @@ jobs:
         run: docker compose run build-docs
 
   build-windows:
-    name: Windows VS2022
+    name: Windows CLANGPDB
     runs-on: windows-latest
     env:
       HAS_OPENSSL_BUILD: 0
-      CC: gcc
-      TOOLCHAIN: VS2022
+      TOOLCHAINS: CLANGPDB
     defaults:
       run:
         shell: bash
     steps:
       - uses: actions/checkout@v6
-      - uses: TheMrMilchmann/setup-msvc-dev@v4
-        with:
-          arch: x86
-      - name: Install Python setuptools
-        run: |
-          python -m pip install setuptools --quiet
       - name: Install Dependencies
         run: |
           choco install make zip iasl nasm --no-progress
