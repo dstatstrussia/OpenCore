@@ -29,3 +29,4 @@ exclude_list:
   - Library/OcPngLib/lodepng.h
   - User/Include/UserPseudoRandom.h
   - User/Library/UserPseudoRandom.c
+  - Library/OcDbtLib
