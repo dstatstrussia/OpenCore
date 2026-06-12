@@ -30,13 +30,15 @@ foreach ($line in $envLines) {
     $v = $matches[2].Trim()
     switch ($k) {
       'PATH' {
-        $vsPaths = $v -split ';' | Where-Object { $_ -match 'Visual Studio|Windows Kits|VC\\Tools\\MSVC|MSVC' }
+        $vsPaths = $v -split ';' | Where-Object { $_ -match 'Visual Studio|Windows Kits|VC\\Tools\\MSVC' }
       }
       'INCLUDE' {
         $includePaths = $v -split ';'
       }
       'LIB' {
         $libPaths = $v -split ';'
+        $ucrtLib = "C:\Program Files (x86)\Windows Kits\10\Lib\${env:WindowsSdkVersion}\ucrt\x64"
+        if (Test-Path $ucrtLib) { $libPaths += $ucrtLib }
       }
     }
   }
@@ -59,4 +61,11 @@ if ($includePaths) {
 if ($libPaths) {
   $convertedLib = ($libPaths -join ';')
   "LIB=$convertedLib" | Out-File -FilePath $outFile -Encoding ascii -Append
+}
+# Also output the Windows Kit version for dynamic paths
+if (Test-Path "${env:ProgramFiles(x86)}\Windows Kits\10\Lib") {
+  $kitVersions = Get-ChildItem "${env:ProgramFiles(x86)}\Windows Kits\10\Lib" -Directory | Sort-Object Name
+  if ($kitVersions) {
+    "WINSDK_VERSION=$($kitVersions[-1].Name)" | Out-File -FilePath $outFile -Encoding ascii -Append
+  }
 }
