@@ -163,6 +163,14 @@ if [ "${BUILDDIR}" != "$(printf "%s\n" "${BUILDDIR}")" ] ; then
   exit 1
 fi
 
+# On Windows nasm and python may not be in PATH, also setup before tool checks.
+if [ "$(unamer)" = "Windows" ]; then
+  prefix="/mingw64/bin:/usr/bin:"
+  gitbash_path="$PATH"
+  path_without_prefix=${gitbash_path#"$prefix"}
+  export PATH="/c/Python38:$path_without_prefix:/c/Program Files/NASM:/c/tools/ASL:/c/ProgramData/chocolatey/bin"
+fi
+
 if [ "$(which git)" = "" ]; then
   echo "Missing git, please install it!"
   exit 1
@@ -178,14 +186,6 @@ if [ "$(unamer)" = "Darwin" ]; then
     echo "Missing Xcode tools, please install them!"
     exit 1
   fi
-fi
-
-# On Windows nasm and python may not be in PATH.
-if [ "$(unamer)" = "Windows" ]; then
-  prefix="/mingw64/bin:/usr/bin:"
-  gitbash_path="$PATH"
-  path_without_prefix=${gitbash_path#"$prefix"}
-  export PATH="/c/Python38:$path_without_prefix:/c/Program Files/NASM:/c/tools/ASL"
 fi
 
 if [ "$(nasm -v)" = "" ] || [ "$(nasm -v | grep Apple)" != "" ]; then
@@ -446,7 +446,7 @@ fi
 
 . ./edksetup.sh || exit 1
 
-if [ "$(unamer)" = "Windows" ] && [ "${TOOLCHAINS[0]}" != "CLANGPDB" ] && [ "${TOOLCHAINS[0]}" != "CLANGDWARF" ]; then
+if [ "$(unamer)" = "Windows" ]; then
   # Configure Visual Studio environment. Requires:
   # 1. choco install vswhere microsoft-build-tools visualcpp-build-tools nasm zip
   # 2. iasl in PATH for MdeModulePkg
@@ -496,6 +496,7 @@ if [ "$(unamer)" = "Windows" ] && [ "${TOOLCHAINS[0]}" != "CLANGPDB" ] && [ "${T
   BASE_TOOLS="$(pwd)/BaseTools"
   export PATH="${BASE_TOOLS}/Bin/Win32:${BASE_TOOLS}/BinWrappers/WindowsLike:$PATH"
   # Extract header paths for cl.exe to work.
+  # Note: distutils was removed in Python 3.12, use setuptools instead
   eval "$(python -c '
 import sys, os, subprocess
 try:
@@ -515,7 +516,7 @@ fi
 if [ "$NEW_BUILDSYSTEM" != "1" ]; then
   if [ "$SKIP_TESTS" != "1" ]; then
     echo "Testing..."
-    if [ "$(unamer)" = "Windows" ] && [ "${TOOLCHAINS[0]}" != "CLANGPDB" ] && [ "${TOOLCHAINS[0]}" != "CLANGDWARF" ]; then
+    if [ "$(unamer)" = "Windows" ]; then
       # Normal build similar to Unix.
       cd BaseTools || exit 1
       nmake        || exit 1
