@@ -165,23 +165,27 @@ fi
 
 # On Windows nasm and python may not be in PATH, also setup before tool checks.
 if [ "$(unamer)" = "Windows" ]; then
-  prefix="/mingw64/bin:/usr/bin:"
-  gitbash_path="$PATH"
-  path_without_prefix=${gitbash_path#"$prefix"}
-  export PATH="/c/Python38:$path_without_prefix:/c/Program Files/NASM:/c/tools/ASL:/c/ProgramData/Chocolatey/bin:/c/Strawberry/c/bin"
+  # Preserve existing PATH but add common tool locations at the front
+  export PATH="/c/ProgramData/Chocolatey/bin:/c/Strawberry/c/bin:$PATH"
 fi
 
 # Check for zip - on Windows it might be zip.exe
 check_zip() {
-  if command -v zip >/dev/null 2>&1 || command -v zip.exe >/dev/null 2>&1; then
-    return 0
-  fi
-  # Try common Windows zip locations
-  for zip_path in "/c/ProgramData/Chocolatey/bin/zip.exe" "/c/Program Files/7-Zip/7z.exe"; do
-    if [ -x "$zip_path" ]; then
+  if [ "$(unamer)" = "Windows" ]; then
+    # On Windows use where command which handles .exe better
+    if where zip > /dev/null 2>&1; then
       return 0
     fi
-  done
+    for zip_path in "/c/ProgramData/Chocolatey/bin/zip.exe" "/c/Program Files/7-Zip/7z.exe"; do
+      if [ -x "$zip_path" ]; then
+        return 0
+      fi
+    done
+  else
+    if command -v zip >/dev/null 2>&1; then
+      return 0
+    fi
+  fi
   return 1
 }
 
