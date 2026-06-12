@@ -1,7 +1,7 @@
 /** @file
-  Copyright (C) 2026. All rights reserved.
+   Copyright (C) 2026. All rights reserved.
 
-  Dynamic Binary Translation Library for ARM64 to x86_64
+   Dynamic Binary Translation Library for ARM64 to x86_64
 **/
 
 #ifndef OC_DBT_LIB_H
