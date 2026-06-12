@@ -513,12 +513,14 @@ if [ "$(unamer)" = "Windows" ]; then
   cd - || exit 1
   export VS2022_PREFIX="${VS2022_BASEPREFIX}${VS2022_DIR}\\"
   WINSDK_BASE="/c/Program Files (x86)/Windows Kits/10/bin"
-  if [ -d "${WINSDK_BASE}" ]; then
+  WINSDK_VERSION=""
+if [ -d "${WINSDK_BASE}" ]; then
     for dir in "${WINSDK_BASE}"/*/; do
       if [ -f "${dir}x86/rc.exe" ]; then
         WINSDK_PATH_FOR_RC_EXE="${dir}x86"
         WINSDK_PATH_FOR_RC_EXE="${WINSDK_PATH_FOR_RC_EXE//\//\\}"
         WINSDK_PATH_FOR_RC_EXE="${WINSDK_PATH_FOR_RC_EXE/\\c\\/C:\\}"
+        WINSDK_VERSION="${dir##*/}"
         break
       fi
     done
@@ -529,6 +531,8 @@ if [ "$(unamer)" = "Windows" ]; then
     echo "Failed to find rc.exe"
     exit 1
   fi
+  # Store WINSDK_VERSION for later use in include paths
+  export WINSDK_VERSION
   BASE_TOOLS="$(pwd)/BaseTools"
   export PATH="${BASE_TOOLS}/Bin/Win32:${BASE_TOOLS}/BinWrappers/WindowsLike:$PATH"
   # Extract header paths for cl.exe to work.
@@ -556,13 +560,17 @@ if [ "$(unamer)" = "Windows" ]; then
         vsMSVCpath="${VS2022_PREFIX//\//}"
         vsMSVCbin=$(echo "$vsMSVCpath" | sed 's|C:|/c|' | sed 's|/VC/Tools/MSVC/[0-9]*\.[0-9]*[^/]*/|/bin/Hostx64/x64/|' )
         export PATH="/c/Program Files (x86)/Windows Kits/10/bin/x86:${vsMSVCbin}:${PATH}"
-        # Also construct INCLUDE for stdint.h and other headers
+        # Also construct INCLUDE and LIB for stdint.h and other headers
         vsMSVCinc="${VS2022_PREFIX}include"
-        export INCLUDE="${vsMSVCinc};C:\Program Files (x86)\Windows Kits\10\Include\10.0.22621.0\ucrt"
+        winSdkUCRT="C:\Program Files (x86)\Windows Kits\10\Include\${WINSDK_VERSION}\ucrt"
+        winSdkLib="C:\Program Files (x86)\Windows Kits\10\Lib\${WINSDK_VERSION}\um\x64"
+        winSdkUCRTLib="C:\Program Files (x86)\Windows Kits\10\Lib\${WINSDK_VERSION}\ucrt\x64"
+        export INCLUDE="${vsMSVCinc};${winSdkUCRT}"
+        export LIB="${winSdkLib};${winSdkUCRTLib}"
       fi
     fi
-    fi
   fi
+fi
 
 if [ "$NEW_BUILDSYSTEM" != "1" ]; then
   if [ "$SKIP_TESTS" != "1" ]; then
