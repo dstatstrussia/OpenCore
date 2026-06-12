@@ -534,7 +534,7 @@ WINSDK_BASE="/c/Program Files (x86)/Windows Kits/10/bin"
    # Note: distutils.msvc9compiler was removed in Python 3.12, use VsDevCmd.bat instead
    if command -v powershell >/dev/null 2>&1; then
      # Use PowerShell to get Visual Studio environment
-     eval "$(powershell -Command "& '${VS2022_BUILDTOOLS}\\Common7\\Tools\\VsDevCmd.bat' -arch=amd64 > $null; Get-ChildItem Env: | Where-Object { $_.Name -in 'PATH','INCLUDE','LIB' } | ForEach-Object { 'export ' + $_.Name + '=\"' + ($_.Value -replace '\\\\','/') + '\"' }")" 2>/dev/null || true
+     eval "$(powershell -Command "& '${VS2022_BUILDTOOLS}\\Common7\\Tools\\VsDevCmd.bat' -arch=amd64 > `$null; Get-ChildItem Env: | Where-Object { `$_.Name -in 'PATH','INCLUDE','LIB' } | ForEach-Object { 'export ' + `$_.Name + '=\"' + (`$_.Value -replace '\\\\','/') + '\"' }")" 2>/dev/null || true
    fi
    export PATH="${BASE_TOOLS}/Bin/Win32:${BASE_TOOLS}/BinWrappers/WindowsLike:$PATH"
  fi
