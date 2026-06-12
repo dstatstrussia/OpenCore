@@ -170,11 +170,9 @@ jobs:
           python -m pip install setuptools --quiet
       - name: Install Dependencies
         run: |
-          choco install make zip iasl --no-progress
-          # Download and install a known working NASM version
-          curl -LfsS "https://www.nasm.us/pub/nasm/releasebuilds/2.15.05/win64/nasm-2.15.05-installer-x64.exe" -o nasm-installer.exe
-          nasm-installer.exe /SILENT
-          rm -f nasm-installer.exe
+          choco install make zip iasl nasm --no-progress
+          # Verify NASM is working
+          nasm -v
 
       - name: CI Bootstrap
         run: |
