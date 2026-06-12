@@ -157,6 +157,7 @@ jobs:
     env:
       HAS_OPENSSL_BUILD: 0
       CC: gcc
+      TOOLCHAIN: VS2022
     defaults:
       run:
         shell: bash
@@ -171,7 +172,6 @@ jobs:
       - name: Install Dependencies
         run: |
           choco install make zip iasl nasm --no-progress
-          # Verify NASM is working
           nasm -v
 
       - name: CI Bootstrap
