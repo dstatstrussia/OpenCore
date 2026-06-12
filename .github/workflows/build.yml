@@ -151,12 +151,13 @@ jobs:
       - name: Docs
         run: docker compose run build-docs
 
-build-windows:
+  build-windows:
     name: Windows CLANGPDB
     runs-on: windows-latest
     env:
       HAS_OPENSSL_BUILD: 0
       TOOLCHAINS: CLANGPDB
+      CC: clang
     defaults:
       run:
         shell: bash
@@ -165,10 +166,10 @@ build-windows:
       - name: Install Dependencies
         run: |
           choco install make zip iasl nasm --no-progress
-          # Install LLVM for CLANGPDB toolchain (not MinGW)
           choco install llvm --no-progress
+          # Prepend LLVM to PATH to override MinGW GCC for CLANGPDB
+          echo "PATH=/c/Program Files/LLVM/bin:$PATH" >> $GITHUB_ENV
           nasm -v
-          echo "C:\Program Files\LLVM\bin" >> $GITHUB_PATH
       - name: Install Python setuptools
         run: |
           python -m pip install setuptools --quiet --force-reinstall
