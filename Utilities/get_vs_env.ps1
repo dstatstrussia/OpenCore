@@ -1,30 +1,34 @@
 param([string]$vsPath, [string]$outFile)
 
-# Run VsDevCmd.bat and capture ALL environment variables after it runs
+# Run VsDevCmd.bat and capture environment variables
 $batPath = Join-Path $vsPath "Common7\Tools\VsDevCmd.bat"
 $tempFile = [System.IO.Path]::GetTempFileName()
-cmd /c "`"$batPath`" -arch=amd64 -no_logo && set > `"$tempFile`"" 2>$null
+cmd /c "`"$batPath`" -arch=amd64 -no_logo > nul && set > `"$tempFile`"" 2>$null
+
 if (-not (Test-Path $tempFile)) {
   exit 1
 }
-$envOutput = Get-Content $tempFile
+$envLines = Get-Content $tempFile -ErrorAction SilentlyContinue
 Remove-Item $tempFile -ErrorAction SilentlyContinue
 
-# Parse and write PATH/INCLUDE/LIB with Git Bash path format
+if ([string]::IsNullOrEmpty($envLines)) {
+  exit 1
+}
+
+# Write output
 Set-Content -Path $outFile -Value $null -Encoding ascii
 
 $vsPaths = @()
 $includePaths = @()
 $libPaths = @()
 
-$envOutput | ForEach-Object {
-  if ($_ -match '^([A-Z]+)=(.*)$') {
+foreach ($line in $envLines) {
+  if ($line -match '^([A-Z]+)=(.*)$') {
     $k = $matches[1]
     $v = $matches[2].Trim()
     switch ($k) {
       'PATH' {
-        $parts = $v -split ';' | Where-Object { $_ -match 'Visual Studio|Windows Kits|VC\\Tools\\MSVC|MSVC\\' }
-        $vsPaths = $parts
+        $vsPaths = $v -split ';' | Where-Object { $_ -match 'Visual Studio|Windows Kits|VC\\Tools\\MSVC|MSVC' }
       }
       'INCLUDE' {
         $includePaths = $v -split ';'
@@ -36,27 +40,21 @@ $envOutput | ForEach-Object {
   }
 }
 
-function Convert-ToGitBashPath([string[]]$paths) {
-  ($paths | ForEach-Object {
+# Convert PATH to Git Bash format (forward slashes, /c/...)
+if ($vsPaths) {
+  $convertedPaths = ($vsPaths | ForEach-Object {
     ($_ -replace '\\','/') -replace '^([A-Za-z]):','/$1'
   }) -join ':'
+  "PATH=$convertedPaths" | Out-File -FilePath $outFile -Encoding ascii -Append
 }
 
-function Convert-ToGitBashPathSemicolon([string[]]$paths) {
-  ($paths | ForEach-Object {
-    ($_ -replace '\\','/') -replace '^([A-Za-z]):','/$1'
-  }) -join ';'
-}
-
-if ($vsPaths) {
-  $converted = Convert-ToGitBashPath $vsPaths
-  "PATH=$converted" | Out-File -FilePath $outFile -Encoding ascii -Append
-}
+# Keep INCLUDE/LIB as Windows paths (backslashes) for cl.exe
 if ($includePaths) {
-  $converted = Convert-ToGitBashPathSemicolon $includePaths
-  "INCLUDE=$converted" | Out-File -FilePath $outFile -Encoding ascii -Append
+  $convertedInclude = ($includePaths -join ';')
+  "INCLUDE=$convertedInclude" | Out-File -FilePath $outFile -Encoding ascii -Append
 }
+
 if ($libPaths) {
-  $converted = Convert-ToGitBashPathSemicolon $libPaths
-  "LIB=$converted" | Out-File -FilePath $outFile -Encoding ascii -Append
+  $convertedLib = ($libPaths -join ';')
+  "LIB=$convertedLib" | Out-File -FilePath $outFile -Encoding ascii -Append
 }

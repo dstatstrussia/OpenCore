@@ -553,9 +553,12 @@ if [ "$(unamer)" = "Windows" ]; then
       # Fallback: use VS2022_PREFIX directly if PowerShell failed
       if [ -n "$VS2022_PREFIX" ]; then
         # Convert VS2022_PREFIX to Git Bash path for MSVC bin
-        vsMSVCpath="${VS2022_PREFIX//\\//}"
+        vsMSVCpath="${VS2022_PREFIX//\//}"
         vsMSVCbin=$(echo "$vsMSVCpath" | sed 's|C:|/c|' | sed 's|/VC/Tools/MSVC/[0-9]*\.[0-9]*[^/]*/|/bin/Hostx64/x64/|' )
-        export PATH="/c/Program Files (x86)/Windows Kits/10/bin/x86:${vsMSVCbin}:${PATH}"
+        # Also construct INCLUDE for stdint.h and other headers
+        # Use VS2022_PREFIX for include path (Windows format)
+        vsMSVCinc="${VS2022_PREFIX}include"
+        export INCLUDE="${vsMSVCinc};C:\\Program Files (x86)\\Windows Kits\\10\\Include\\10.0.22621.0\\ucrt"
       fi
     fi
   fi
