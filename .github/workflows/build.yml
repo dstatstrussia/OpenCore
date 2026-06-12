@@ -171,7 +171,10 @@ jobs:
       - name: Install Dependencies
         run: |
           choco install make zip iasl --no-progress
-          choco install nasm --version 2.16.1 --no-progress
+          # Download and install a known working NASM version
+          curl -LfsS "https://www.nasm.us/pub/nasm/releasebuilds/2.15.05/win64/nasm-2.15.05-installer-x64.exe" -o nasm-installer.exe
+          nasm-installer.exe /SILENT
+          rm -f nasm-installer.exe
 
       - name: CI Bootstrap
         run: |
