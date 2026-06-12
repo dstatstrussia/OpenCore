@@ -31,7 +31,7 @@ OcGetDbtBootEntries (
   OUT       UINTN                   *NumEntries
   )
 {
-  EFI_STATUS                       Status;
+EFI_STATUS  Status;
   EFI_SIMPLE_FILE_SYSTEM_PROTOCOL  *FileSystem;
   EFI_FILE_PROTOCOL                *RootDirectory;
   EFI_FILE_PROTOCOL                *BootDirectory;
@@ -195,7 +195,7 @@ OpenDbvX64EntryPoint (
   IN EFI_SYSTEM_TABLE  *SystemTable
   )
 {
-  EFI_STATUS                 Status;
+  EFI_STATUS  Status;
 
   Status = DbtInitContext (&gDbtContext, 0x10000);
   if (EFI_ERROR (Status)) {
