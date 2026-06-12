@@ -170,23 +170,16 @@ if [ "$(unamer)" = "Windows" ]; then
 fi
 
 # Check for zip - on Windows it might be zip.exe
-check_zip() {
+# Also check for iasl and nasm on Windows with where command
+check_exe() {
+  local tool="$1"
   if [ "$(unamer)" = "Windows" ]; then
-    # On Windows use where command which handles .exe better
-    if where zip > /dev/null 2>&1; then
-      return 0
-    fi
-    for zip_path in "/c/ProgramData/Chocolatey/bin/zip.exe" "/c/Program Files/7-Zip/7z.exe"; do
-      if [ -x "$zip_path" ]; then
-        return 0
-      fi
-    done
+    where "$tool" > /dev/null 2>&1
+    return $?
   else
-    if command -v zip >/dev/null 2>&1; then
-      return 0
-    fi
+    command -v "$tool" >/dev/null 2>&1
+    return $?
   fi
-  return 1
 }
 
 if [ "$(which git)" = "" ]; then
@@ -194,7 +187,7 @@ if [ "$(which git)" = "" ]; then
   exit 1
 fi
 
-if ! check_zip; then
+if ! check_exe zip; then
   echo "Missing zip, please install it!"
   exit 1
 fi
@@ -206,50 +199,70 @@ if [ "$(unamer)" = "Darwin" ]; then
   fi
 fi
 
-if [ "$(nasm -v)" = "" ] || [ "$(nasm -v | grep Apple)" != "" ]; then
-  echo "Missing or incompatible nasm!"
-  echo "Download the latest nasm from http://www.nasm.us/pub/nasm/releasebuilds"
-  echo "Current PATH: $PATH -- $(which nasm)"
-  # On Darwin we can install prebuilt nasm. On Linux let users handle it.
-  if [ "$(unamer)" = "Darwin" ]; then
-    prompt "Install last tested version automatically?"
-  else
+# Check for nasm and iasl on Windows using where command
+if [ "$(unamer)" = "Windows" ]; then
+  # On Windows, check if tools exist before running them
+  if ! check_exe nasm; then
+    echo "Missing or incompatible nasm!"
+    echo "Download the latest nasm from http://www.nasm.us/pub/nasm/releasebuilds"
+    echo "Current PATH: $PATH"
     exit 1
   fi
-  pushd /tmp >/dev/null || exit 1
-  rm -rf nasm-mac64.zip
-  curl -OL "https://github.com/acidanthera/ocbuild/raw/master/external/nasm-mac64.zip" || exit 1
-  nasmzip=$(cat nasm-mac64.zip)
-  rm -rf nasm-*
-  curl -OL -g "https://github.com/acidanthera/ocbuild/raw/master/external/${nasmzip}" || exit 1
-  unzip -q "${nasmzip}" nasm*/nasm nasm*/ndisasm || exit 1
-  sudo mkdir -p /usr/local/bin || exit 1
-  sudo mv nasm*/nasm /usr/local/bin/ || exit 1
-  sudo mv nasm*/ndisasm /usr/local/bin/ || exit 1
-  rm -rf "${nasmzip}" nasm-*
-  popd >/dev/null || exit 1
-fi
+  if [ "$(nasm -v | grep Apple)" != "" ]; then
+    echo "Missing or incompatible nasm!"
+    exit 1
+  fi
+  if ! check_exe iasl; then
+    echo "Missing iasl!"
+    echo "Download the latest iasl from https://acpica.org/downloads"
+    exit 1
+  fi
+else
+  if [ "$(nasm -v)" = "" ] || [ "$(nasm -v | grep Apple)" != "" ]; then
+    echo "Missing or incompatible nasm!"
+    echo "Download the latest nasm from http://www.nasm.us/pub/nasm/releasebuilds"
+    echo "Current PATH: $PATH -- $(which nasm)"
+    # On Darwin we can install prebuilt nasm. On Linux let users handle it.
+    if [ "$(unamer)" = "Darwin" ]; then
+      prompt "Install last tested version automatically?"
+    else
+      exit 1
+    fi
+    pushd /tmp >/dev/null || exit 1
+    rm -rf nasm-mac64.zip
+    curl -OL "https://github.com/acidanthera/ocbuild/raw/master/external/nasm-mac64.zip" || exit 1
+    nasmzip=$(cat nasm-mac64.zip)
+    rm -rf nasm-*
+    curl -OL -g "https://github.com/acidanthera/ocbuild/raw/master/external/${nasmzip}" || exit 1
+    unzip -q "${nasmzip}" nasm*/nasm nasm*/ndisasm || exit 1
+    sudo mkdir -p /usr/local/bin || exit 1
+    sudo mv nasm*/nasm /usr/local/bin/ || exit 1
+    sudo mv nasm*/ndisasm /usr/local/bin/ || exit 1
+    rm -rf "${nasmzip}" nasm-*
+    popd >/dev/null || exit 1
+  fi
 
-if [ "$(iasl -v)" = "" ]; then
-  echo "Missing iasl!"
-  echo "Download the latest iasl from https://acpica.org/downloads"
-  # On Darwin we can install prebuilt iasl. On Linux let users handle it.
-  if [ "$(unamer)" = "Darwin" ]; then
-    prompt "Install last tested version automatically?"
-  else
-    exit 1
+  if [ "$(iasl -v)" = "" ]; then
+    echo "Missing iasl!"
+    echo "Download the latest iasl from https://acpica.org/downloads"
+    # On Darwin we can install prebuilt iasl. On Linux let users handle it.
+    if [ "$(unamer)" = "Darwin" ]; then
+      prompt "Install last tested version automatically?"
+    else
+      exit 1
+    fi
+    pushd /tmp >/dev/null || exit 1
+    rm -rf iasl-macosx.zip
+    curl -OL "https://github.com/acidanthera/ocbuild/raw/master/external/iasl-macosx.zip" || exit 1
+    iaslzip=$(cat iasl-macosx.zip)
+    rm -rf iasl
+    curl -OL -g "https://github.com/acidanthera/ocbuild/raw/master/external/${iaslzip}" || exit 1
+    unzip -q "${iaslzip}" iasl || exit 1
+    sudo mkdir -p /usr/local/bin || exit 1
+    sudo mv iasl /usr/local/bin/ || exit 1
+    rm -rf "${iaslzip}" iasl
+    popd >/dev/null || exit 1
   fi
-  pushd /tmp >/dev/null || exit 1
-  rm -rf iasl-macosx.zip
-  curl -OL "https://github.com/acidanthera/ocbuild/raw/master/external/iasl-macosx.zip" || exit 1
-  iaslzip=$(cat iasl-macosx.zip)
-  rm -rf iasl
-  curl -OL -g "https://github.com/acidanthera/ocbuild/raw/master/external/${iaslzip}" || exit 1
-  unzip -q "${iaslzip}" iasl || exit 1
-  sudo mkdir -p /usr/local/bin || exit 1
-  sudo mv iasl /usr/local/bin/ || exit 1
-  rm -rf "${iaslzip}" iasl
-  popd >/dev/null || exit 1
 fi
 
 # On Darwin we need mtoc. Only for XCODE5, but do not care for now.
