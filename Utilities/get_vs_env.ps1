@@ -3,7 +3,9 @@ param([string]$vsPath, [string]$outFile)
 # Run VsDevCmd.bat and capture environment variables
 $batPath = Join-Path $vsPath "Common7\Tools\VsDevCmd.bat"
 $tempFile = [System.IO.Path]::GetTempFileName()
-cmd /c "`"$batPath`" -arch=amd64 -no_logo > nul && set > `"$tempFile`"" 2>$null
+
+# Use cmd /c to run VsDevCmd.bat and capture environment
+cmd /v:on /c "`"$batPath`" -arch=amd64 -no_logo > nul && set > `"$tempFile`"" 2>$null
 
 if (-not (Test-Path $tempFile)) {
   exit 1
