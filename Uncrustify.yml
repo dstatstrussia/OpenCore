@@ -30,3 +30,4 @@ exclude_list:
   - User/Include/UserPseudoRandom.h
   - User/Library/UserPseudoRandom.c
   - Library/OcDbtLib
+  - Platform/OpenDbvX64Dxe
