@@ -152,7 +152,7 @@ jobs:
        - name: Docs
          run: docker compose run build-docs
 
-build-windows:
+  build-windows:
     name: Windows VS2022
     runs-on: windows-latest
     env:
@@ -179,7 +179,7 @@ build-windows:
        - name: CI Bootstrap
          shell: bash
          env:
-           PYTHON_COMMAND: ${{ steps.python.outputs.python-path }}
+           pythonLocation: ${{ steps.python.outputs.python-location }}
          run: |
            echo "=== Python detection ==="
            echo "PYTHON_COMMAND from setup-python: $PYTHON_COMMAND"
