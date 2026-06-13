@@ -18,7 +18,7 @@ foreach ($line in $envLines) {
     $k = $matches[1].ToUpper()
     $v = $matches[2].Trim()
     switch ($k) {
-      'PATH' { $vsPaths = $v -split ';' | Where-Object { $_ -match 'Visual Studio|Windows Kits|VC\\Tools\\MSVC' } }
+      'PATH' { $vsPaths = $v -split ';' | Where-Object { $_ -match 'Visual Studio|Windows Kits|VC' } }
     }
   }
 }
