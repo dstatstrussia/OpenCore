@@ -147,41 +147,31 @@ echo "Building on $(unamer)"
 
 if [ "$(unamer)" = "Windows" ]; then
     cmd <<< 'chcp 437'
-    # Find Python - try python, python3, py, or check common install paths
-    PYTHON_CMD=""
-    # First check for py launcher (common in GitHub Actions)
-    if command -v py >/dev/null 2>&1; then
-      PYTHON_CMD="py"
-    elif command -v python >/dev/null 2>&1; then
-      PYTHON_CMD="python"
-    elif command -v python3 >/dev/null 2>&1; then
-      PYTHON_CMD="python3"
+    # Find Python for nmake - must be available as 'python' command
+    # GitHub Actions has py launcher, but nmake needs python.exe in PATH
+    if command -v python >/dev/null 2>&1; then
+      : # python already in PATH
     elif [ -f "/c/Python312/python.exe" ]; then
       export PATH="/c/Python312:${PATH}"
-      PYTHON_CMD="python"
     elif [ -f "/c/Python311/python.exe" ]; then
       export PATH="/c/Python311:${PATH}"
-      PYTHON_CMD="python"
     elif [ -f "/c/Program Files/Python312/python.exe" ]; then
       export PATH="/c/Program Files/Python312:${PATH}"
-      PYTHON_CMD="python"
+    elif [ -f "/c/Program Files (x86)/Python312/python.exe" ]; then
+      export PATH="/c/Program Files (x86)/Python312:${PATH}"
     elif [ -d "/c/hostedtoolcache/windows/Python" ]; then
-      # GitHub Actions hosted toolcache - find any Python version
-      # shellcheck disable=SC2012
-      for PYDIR in "/c/hostedtoolcache/windows/Python"/*/; do
-        if [ -f "${PYDIR}x64/python.exe" ]; then
-          export PATH="${PYDIR}x64:${PATH}"
-          PYTHON_CMD="python"
-          break
-        fi
-      done
+      # GitHub Actions hosted toolcache - find Python via cmd
+      PYTHON_DIR=$(cmd /c 'dir "C:\hostedtoolcache\windows\Python" /ad /b 2^>nul' 2>/dev/null | head -1)
+      if [ -n "$PYTHON_DIR" ] && [ -f "/c/hostedtoolcache/windows/Python/${PYTHON_DIR}/x64/python.exe" ]; then
+        export PATH="/c/hostedtoolcache/windows/Python/${PYTHON_DIR}/x64:${PATH}"
+      fi
     fi
-    if [ -n "$PYTHON_CMD" ]; then
-      export PYTHON_COMMAND="$PYTHON_CMD"
-      # Ensure setuptools is installed for Python 3.12+
-      if ! $PYTHON_CMD -c "import setuptools._distutils" 2>/dev/null; then
+    export PYTHON_COMMAND="${PYTHON_COMMAND:-python}"
+    # Ensure setuptools is installed for Python 3.12+
+    if command -v python >/dev/null 2>&1; then
+      if ! python -c "import setuptools._distutils" 2>/dev/null; then
         echo "Installing setuptools for Python 3.12 compatibility..."
-        $PYTHON_CMD -m pip install setuptools --quiet --force-reinstall 2>/dev/null || true
+        python -m pip install setuptools --quiet --force-reinstall 2>/dev/null || true
       fi
     fi
   fi
