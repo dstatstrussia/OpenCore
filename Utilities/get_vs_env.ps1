@@ -63,7 +63,7 @@ if ($libPaths) {
   "LIB=$convertedLib" | Out-File -FilePath $outFile -Encoding ascii -Append
 }
 # Disable C4311/C4312 warnings for IA32 header compatibility in host tools
-"CL=-wd4311 -wd4312" | Out-File -FilePath $outFile -Encoding ascii -Append
+"CL=/wd4311 /wd4312" | Out-File -FilePath $outFile -Encoding ascii -Append
 # Also output the Windows Kit version for dynamic paths
 if (Test-Path "${env:ProgramFiles(x86)}\Windows Kits\10\Lib") {
   $kitVersions = Get-ChildItem "${env:ProgramFiles(x86)}\Windows Kits\10\Lib" -Directory | Sort-Object Name
