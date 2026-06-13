@@ -65,7 +65,8 @@ if ($libPaths) {
 }
 
 # Disable warnings as errors and C4311/C4312/C4267 for IA32 header compatibility in host tools
-$writer.WriteLine("CL=/WX- /wd4311 /wd4312 /wd4267")
+# Note: _CL_ appends flags after command line instead of prepending
+$writer.WriteLine("_CL_=/WX- /wd4311 /wd4312 /wd4267")
 
 # Also output the Windows Kit version for dynamic paths
 if (Test-Path "${env:ProgramFiles(x86)}\Windows Kits\10\Lib") {
