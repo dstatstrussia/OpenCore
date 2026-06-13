@@ -178,9 +178,18 @@ jobs:
        - name: CI Bootstrap
          shell: bash
          run: |
-           PYTHON_PATH=$(cmd /c 'py -3 -c "import sys; print(sys.executable)"' 2>/dev/null | tr -d '\r')
-           if [ -n "$PYTHON_PATH" ]; then
-             export PYTHON_COMMAND="$PYTHON_PATH"
+           # Get Python path for nmake - actions/setup-python doesn't add python to cmd PATH
+           echo "=== Python detection ==="
+           cmd /c 'py -0'
+           PYTHON_EXE=$(cmd /c 'py -3 -c "import sys; print(sys.executable)"' 2>/dev/null | tr -d '\r')
+           echo "py -3 returned: '$PYTHON_EXE'"
+           if [ -n "$PYTHON_EXE" ]; then
+             # Ensure it's a valid path containing python.exe
+             PYTHON_EXE=$(cmd /c "echo $PYTHON_EXE" 2>/dev/null | tr -d '\r')
+             export PYTHON_COMMAND="$PYTHON_EXE"
+             echo "PYTHON_COMMAND set to: $PYTHON_COMMAND"
+           else
+             echo "Warning: Could not determine python.exe path, nmake may fail"
            fi
            export PATH="/c/ProgramData/chocolatey/bin:$PATH"
            src=$(curl -LfsS https://raw.githubusercontent.com/acidanthera/ocbuild/master/ci-bootstrap.sh) && eval "$src" || exit 1
