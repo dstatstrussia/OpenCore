@@ -484,28 +484,28 @@ fi
 . ./edksetup.sh || exit 1
 
 if [ "$(unamer)" = "Windows" ]; then
-  # Configure Visual Studio environment. Requires:
-  # 1. choco install vswhere microsoft-build-tools visualcpp-build-tools nasm zip
-  # 2. iasl in PATH for MdeModulePkg
-  tools="${EDK_TOOLS_PATH}"
-  tools="${tools//\//\\}"
-  # For Travis CI
-  tools="${tools/\\c\\/C:\\}"
-  # For GitHub Actions
-  tools="${tools/\\d\\/D:\\}"
-  echo "Expanded EDK_TOOLS_PATH from ${EDK_TOOLS_PATH} to ${tools}"
-  export EDK_TOOLS_PATH="${tools}"
-  export BASE_TOOLS_PATH="${tools}"
-  VS2022_BUILDTOOLS=$(vswhere -latest -version '[16.0,)' -products '*' -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath)
-  VS2022_BASEPREFIX="${VS2022_BUILDTOOLS}\\VC\\Tools\\MSVC\\"
-  # Intended to use ls here to get first entry.
-  # REF: https://github.com/koalaman/shellcheck/wiki/SC2012
-  # shellcheck disable=SC2012
-  cd "${VS2022_BASEPREFIX}" || exit 1
-  # Incorrect diagnostic due to action.
-  # REF: https://github.com/koalaman/shellcheck/wiki/SC2035
-  # shellcheck disable=SC2035
-VS2022_DIR="$(find * -maxdepth 0 -type d -print -quit)"
+   # Configure Visual Studio environment. Requires:
+   # 1. choco install vswhere microsoft-build-tools visualcpp-build-tools nasm zip
+   # 2. iasl in PATH for MdeModulePkg
+   tools="${EDK_TOOLS_PATH}"
+   tools="${tools//\//\\}"
+   # For Travis CI
+   tools="${tools/\\c\\/C:\\}"
+   # For GitHub Actions
+   tools="${tools/\\d\\/D:\\}"
+   echo "Expanded EDK_TOOLS_PATH from ${EDK_TOOLS_PATH} to ${tools}"
+   export EDK_TOOLS_PATH="${tools}"
+   export BASE_TOOLS_PATH="${tools}"
+   VS2022_BUILDTOOLS=$(vswhere -latest -version '[16.0,)' -products '*' -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath)
+   VS2022_BASEPREFIX="${VS2022_BUILDTOOLS}\\VC\\Tools\\MSVC\\"
+   # Intended to use ls here to get first entry.
+   # REF: https://github.com/koalaman/shellcheck/wiki/SC2012
+   # shellcheck disable=SC2012
+   cd "${VS2022_BASEPREFIX}" || exit 1
+   # Incorrect diagnostic due to action.
+   # REF: https://github.com/koalaman/shellcheck/wiki/SC2035
+   # shellcheck disable=SC2035
+   VS2022_DIR="$(find * -maxdepth 0 -type d -print -quit)"
    if [ "${VS2022_DIR}" = "" ]; then
      echo "No VS2022 MSVC compiler"
      exit 1
@@ -553,11 +553,18 @@ VS2022_DIR="$(find * -maxdepth 0 -type d -print -quit)"
              # Prepend VS PATH to existing PATH to ensure MSVC tools come first
              export "PATH=${v}:${PATH}"
            elif [ -n "$k" ]; then
-             export "$k=$v"
+             # Store in array for later safe export with proper quoting
+             declare -g "$k=$v"
            fi
          fi
        done < "$ps_env_file"
        rm -f "$ps_env_file"
+       # Re-export with proper quoting after the while loop
+       for var in PATH INCLUDE LIB _CL_ WINSDK_VERSION; do
+         if [ -n "${!var}" ]; then
+           export "${var}=${!var}"
+         fi
+       done
      else
        # Fallback: use VS2022_PREFIX directly if PowerShell failed
        if [ -n "$VS2022_PREFIX" ]; then
@@ -572,11 +579,11 @@ VS2022_DIR="$(find * -maxdepth 0 -type d -print -quit)"
          winSdkUCRTLib="C:\\Program Files (x86)\\Windows Kits\\10\\Lib\\${WINSDK_VERSION}\\ucrt\\x64"
          export INCLUDE="${vsMSVCinc};${winSdkUCRT}"
          export LIB="${winSdkLib};${winSdkUCRTLib}"
-         # _CL_ appends flags after command line - disable warnings as errors and C4311/C4312/C4267
-         if [ -z "${_CL_}" ]; then
-           export _CL_="/WX- /wd4311 /wd4312 /wd4267"
+         # CL prepends to command line - add /WX- to disable warnings as errors and C4311/C4312/C4267/C4244
+         if [ -z "${CL}" ]; then
+           export "CL=/WX- /wd4311 /wd4312 /wd4267 /wd4244"
          else
-           export _CL_="${_CL_} /WX- /wd4311 /wd4312 /wd4267"
+           export "CL=${CL} /WX- /wd4311 /wd4312 /wd4267 /wd4244"
          fi
        fi
      fi

@@ -51,20 +51,21 @@ if ($vsPaths) {
   $writer.WriteLine("PATH=$convertedPaths")
 }
 
-# Keep INCLUDE/LIB as Windows paths (backslashes) for cl.exe
+# Keep INCLUDE/LIB as Windows paths (double backslashes for Git Bash escaping)
 if ($includePaths) {
-  $convertedInclude = ($includePaths -join ';')
+  $convertedInclude = ($includePaths | ForEach-Object { ($_ -replace '\\','\\') }) -join ';'
   $writer.WriteLine("INCLUDE=$convertedInclude")
 }
 
 if ($libPaths) {
-  $convertedLib = ($libPaths -join ';')
+  $convertedLib = ($libPaths | ForEach-Object { ($_ -replace '\\','\\') }) -join ';'
   $writer.WriteLine("LIB=$convertedLib")
 }
 
-# Disable warnings as errors and C4311/C4312/C4267 for IA32 header compatibility in host tools
+# Disable warnings as errors and C4311/C4312/C4267/C4244 for IA32 header compatibility in host tools
 # Note: _CL_ appends flags after command line instead of prepending
-$writer.WriteLine("_CL_=/WX- /wd4311 /wd4312 /wd4267")
+# Use backslash-space to preserve the entire value as a single token in bash
+$writer.WriteLine("_CL_=/WX-\ /wd4311\ /wd4312\ /wd4267\ /wd4244")
 
 # Also output the Windows Kit version for dynamic paths
 if (Test-Path "${env:ProgramFiles(x86)}\Windows Kits\10\Lib") {
