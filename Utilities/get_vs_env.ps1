@@ -18,28 +18,27 @@ foreach ($line in $envLines) {
     $k = $matches[1].ToUpper()
     $v = $matches[2].Trim()
     switch ($k) {
-      'PATH' { $vsPaths = $v -split ';' | Where-Object { $_ -match 'Visual Studio|Windows Kits|VC' } }
+      'PATH' { $vsPaths = $v -split ';' | Where-Object { $_ -match 'Visual Studio|Windows Kits|VC' -and $_ -notmatch 'Git' } }
     }
   }
 }
 
-# Convert PATH to Git Bash format with proper quoting for spaces
+# Convert and output PATH in VAR=VALUE format
 if ($vsPaths) {
   $convertedPaths = ($vsPaths | ForEach-Object {
-    # Replace backslashes with forward slashes
     $p = $_.Replace('\','/')
-    # Convert C:/ to /c/ (lowercase drive letter)
     if ($p -match '^([A-Za-z]):/') {
       $drive = $p.Substring(0,1).ToLower()
       $p = "/$drive" + $p.Substring(3)
     }
-    if ($p.Contains(' ')) { "'$p'" } else { $p }
+    $p
   }) -join ':'
   $writer.WriteLine("PATH=$convertedPaths")
 }
 
-# CL prepend flags for MSVC
-$writer.WriteLine("CL='/WX- /wd4311 /wd4312 /wd4267 /wd4244'")
+# CL flags - suppress warnings for IA32 compatibility builds
+# Bash script will handle appending to existing CL if set
+$writer.WriteLine("CL=/WX- /wd4311 /wd4312 /wd4267 /wd4244")
 
 # Windows Kit version
 if (Test-Path "${env:ProgramFiles(x86)}\Windows Kits\10\Lib") {
