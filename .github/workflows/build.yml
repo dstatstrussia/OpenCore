@@ -152,7 +152,7 @@ jobs:
        - name: Docs
          run: docker compose run build-docs
 
-  build-windows:
+build-windows:
     name: Windows VS2022
     runs-on: windows-latest
     env:
@@ -162,6 +162,7 @@ jobs:
        - uses: actions/checkout@v6
 
        - uses: actions/setup-python@v6
+         id: python
          with:
            python-version: '3.x'
 
@@ -173,26 +174,27 @@ jobs:
          shell: cmd
          run: |
            choco install make nasm zip iasl --no-progress
-           py -3 -m pip install setuptools --quiet --force-reinstall
+           "%pythonLocation%\python.exe" -m pip install setuptools --quiet --force-reinstall
 
        - name: CI Bootstrap
          shell: bash
+         env:
+           PYTHON_COMMAND: ${{ steps.python.outputs.python-path }}
          run: |
            echo "=== Python detection ==="
-           PYTHON_EXE=$(cmd /c 'py -3 -c "import sys; print(sys.executable)"' 2>/dev/null | tr -d '\r')
-           echo "py -3 returned: '$PYTHON_EXE'"
-           if [ -n "$PYTHON_EXE" ] && [ "$PYTHON_EXE" != "python" ] && [ "$PYTHON_EXE" != "python3" ]; then
-             export PYTHON_COMMAND="$PYTHON_EXE"
-             echo "PYTHON_COMMAND set to: $PYTHON_COMMAND"
-           else
-             echo "Invalid PYTHON_EXE, trying fallback..."
-             PYTHON_EXE=$(cmd /c 'py -3 -c "import os, sys; print(os.path.join(os.path.dirname(sys.executable), \"python.exe\"))"' 2>/dev/null | tr -d '\r')
-             echo "Fallback gave: '$PYTHON_EXE'"
-             if [ -n "$PYTHON_EXE" ] && [ "$PYTHON_EXE" != "python" ] && [ "$PYTHON_EXE" != "python3" ]; then
-               export PYTHON_COMMAND="$PYTHON_EXE"
-               echo "PYTHON_COMMAND set to: $PYTHON_COMMAND"
-             else
-               echo "Warning: Could not determine python.exe path, nmake may fail"
+           echo "PYTHON_COMMAND from setup-python: $PYTHON_COMMAND"
+           # Convert bash-style path to Windows if needed (e.g., /c/... -> C:\...)
+           if [[ "$PYTHON_COMMAND" == /c/* ]]; then
+             PYTHON_COMMAND=$(cmd /c "echo ${PYTHON_COMMAND/\/c\//C:\\}" 2>/dev/null | tr -d '\r' || echo "$PYTHON_COMMAND")
+             echo "Converted PYTHON_COMMAND: $PYTHON_COMMAND"
+           fi
+           # Ensure python is in cmd PATH for nmake detection
+           if ! cmd /c 'where python >/dev/null 2>&1' 2>/dev/null; then
+             echo "Adding python to cmd PATH..."
+             PYTHON_CMD_DIR=$(cmd /c 'echo %PYTHON_COMMAND%' 2>/dev/null | tr -d '\r' | sed 's|\\[^\\]*$||')
+             if [ -n "$PYTHON_CMD_DIR" ]; then
+               PYTHON_COMMAND="$PYTHON_CMD_DIR\\python.exe"
+               echo "Adjusted PYTHON_COMMAND: $PYTHON_COMMAND"
              fi
            fi
            export PATH="/c/ProgramData/chocolatey/bin:$PATH"
