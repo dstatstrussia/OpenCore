@@ -166,14 +166,17 @@ if [ "$(unamer)" = "Windows" ]; then
       done
     fi
     # Set PYTHON_COMMAND - must be a path that works in cmd context for nmake
-    if [ -n "$PYTHON_COMMAND" ]; then
+    if [ -n "$pythonLocation" ]; then
+      # setup-python provides pythonLocation - construct the python.exe path for nmake
+      export PYTHON_COMMAND="$pythonLocation\\python.exe"
+      echo "Set PYTHON_COMMAND=$PYTHON_COMMAND from setup-python"
+    elif [ -n "$PYTHON_COMMAND" ]; then
       echo "Using existing PYTHON_COMMAND: $PYTHON_COMMAND"
     elif command -v py >/dev/null 2>&1; then
       # Use py launcher to get the actual python.exe directory and construct full path
       PYTHON_DIR=$(cmd /c 'py -3 -c "import os, sys; print(os.path.dirname(sys.executable))"' 2>/dev/null | tr -d '\r')
-      echo "DEBUG: Python directory is '$PYTHON_DIR'"
+      echo "DEBUG: Python directory from py launcher: '$PYTHON_DIR'"
       if [ -n "$PYTHON_DIR" ] && [[ "$PYTHON_DIR" == *":"* ]]; then
-        # PYTHON_COMMAND must be a full Windows path for nmake
         export PYTHON_COMMAND="${PYTHON_DIR}\\python.exe"
         echo "Set PYTHON_COMMAND=$PYTHON_COMMAND for nmake compatibility"
       else
