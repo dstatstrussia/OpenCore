@@ -40,31 +40,9 @@ if ($vsPaths) {
 # Bash script will handle appending to existing CL if set
 $writer.WriteLine("CL=/WX- /wd4311 /wd4312 /wd4267 /wd4244")
 
-# Python info for nmake - check if python.exe is available
-$pythonCmd = Get-Command python -ErrorAction SilentlyContinue
-if ($pythonCmd) {
-  $writer.WriteLine("PYTHON_FOUND=1")
-} else {
-  $pyLauncher = Get-Command py -ErrorAction SilentlyContinue
-  if ($pyLauncher) {
-    $writer.WriteLine("PYTHON_LAUNCHER=1")
-  }
-}
-
 if (Test-Path "${env:ProgramFiles(x86)}\Windows Kits\10\Lib") {
   $kitVersions = Get-ChildItem "${env:ProgramFiles(x86)}\Windows Kits\10\Lib" -Directory | Sort-Object Name
   if ($kitVersions) { $writer.WriteLine("WINSDK_VERSION=$($kitVersions[-1].Name)") }
-}
-
-# Also output Python path if needed for nmake
-$pythonCmd = Get-Command python -ErrorAction SilentlyContinue
-if ($pythonCmd) {
-  $writer.WriteLine("PYTHON_FOUND=1")
-} else {
-  $pyLauncher = Get-Command py -ErrorAction SilentlyContinue
-  if ($pyLauncher) {
-    $writer.WriteLine("PYTHON_LAUNCHER=1")
-  }
 }
 
 $writer.Close()
