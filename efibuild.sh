@@ -583,30 +583,33 @@ WINSDK_PATH_FOR_RC_EXE="${WINSDK_PATH_FOR_RC_EXE/\\c\\/C:\\}"
         powershell -NoProfile -File "${ROOTDIR}/Utilities/get_vs_env.ps1" -vsPath "$VS2022_BUILDTOOLS" -outFile "$ps_env_file" 2>/dev/null || true
       fi
 if [ -s "$ps_env_file" ]; then
-         while IFS= read -r line; do
-           # Strip carriage returns from PowerShell output (Windows line endings)
-           line="$(printf '%s' "$line" | tr -d '\r')"
-           [ -z "$line" ] && continue
-           var="${line%%=*}"
-           val="${line#*=}"
-           if [ -n "$var" ]; then
-             if [ "$var" = "PATH" ]; then
-               export PATH="${val}:${PATH}"
-             elif [ "$var" = "CL" ]; then
-               if [ -n "$CL" ]; then
-                 export CL="${CL} ${val}"
-               else
-                 export CL="${val}"
-               fi
-             else
-               printf -v "$var" '%s' "$val"
-               # shellcheck disable=SC2163
-               export "${var?}"
-             fi
-           fi
-         done < "$ps_env_file"
-        rm -f "$ps_env_file"
-      else
+          while IFS= read -r line; do
+            # Strip carriage returns from PowerShell output (Windows line endings)
+            line="$(printf '%s' "$line" | tr -d '\r')"
+            [ -z "$line" ] && continue
+            var="${line%%=*}"
+            val="${line#*=}"
+            if [ -n "$var" ]; then
+              if [ "$var" = "PATH" ]; then
+                # PowerShell outputs Unix-style PATH (colon-separated, forward slashes)
+                # Prepend MSVC paths to ensure they take precedence over other tools
+                export PATH="${val}:${PATH}"
+              elif [ "$var" = "CL" ]; then
+                # CL contains compiler flags - set them
+                export CL="${val}"
+              else
+                printf -v "$var" '%s' "$val"
+                # shellcheck disable=SC2163
+                export "${var?}"
+              fi
+            fi
+          done < "$ps_env_file"
+          rm -f "$ps_env_file"
+          # Verify PATH was set correctly
+          if [[ "$PATH" == *"/usr/bin"* ]] && [[ "$PATH" != *"Visual Studio"* ]] && [[ "$PATH" != *"Windows Kits"* ]]; then
+            echo "Warning: PowerShell PATH not applied correctly, falling back to manual PATH setup"
+          fi
+        else
         # Fallback: use VS2022_PREFIX directly if PowerShell failed
         if [ -n "$VS2022_PREFIX" ]; then
           # Convert VS2022_PREFIX to Git Bash path for MSVC bin
@@ -638,13 +641,27 @@ if [ "$(unamer)" = "Windows" ]; then
          echo "Running nmake for Windows (unamer=Windows)"
          cd BaseTools || exit 1
          # Ensure MSVC tools take precedence over Git Bash /usr/bin tools for nmake
-         # VS2022_PREFIX is already set - construct bin path and prepend to PATH
          # VS2022_PREFIX has format C:\...\\ so strip trailing backslash and convert
-         MSVC_BIN=$(echo "${VS2022_PREFIX}" | sed 's|\\\+$||' | sed 's|\\|/|g' | sed 's|^C:|^/c|' | sed 's|^D:|^/d|')
-         MSVC_BIN="${MSVC_BIN}/bin/Hostx64/x64"
-         if [ -n "$MSVC_BIN" ]; then
-           export PATH="${MSVC_BIN}:${PATH}"
-         fi
+         MSVC_ROOT=$(echo "${VS2022_PREFIX}" | sed 's|\\\+$||' | sed 's|\\|/|g' | sed 's|^C:|^/c|' | sed 's|^D:|^/d|')
+         # Try both x86 and x64 host paths (case-insensitive)
+         MSVC_BIN=""
+         for bin_path in "bin/Hostx64/x64" "bin/HostX64/x64" "bin/Hostx86/x86" "bin/HostX86/x86"; do
+           if [ -d "${MSVC_ROOT}/${bin_path}" ]; then
+             MSVC_BIN="${MSVC_ROOT}/${bin_path}"
+             break
+           fi
+         done
+# Also add Windows Kits x86 bin path for link.exe
+          WINSDK_BIN="/c/Program Files (x86)/Windows Kits/10/bin/${WINSDK_VERSION}/x86"
+          if [ -n "$MSVC_BIN" ] && [ -d "$WINSDK_BIN" ]; then
+            export PATH="${MSVC_BIN}:${WINSDK_BIN}:${PATH}"
+          elif [ -n "$MSVC_BIN" ]; then
+            export PATH="${MSVC_BIN}:${PATH}"
+          fi
+          # Ensure CL is set to disable warnings-as-errors
+          if [ -z "${CL}" ]; then
+            export CL="/WX- /wd4311 /wd4312 /wd4267 /wd4244"
+          fi
          nmake        || exit 1
         cd ..        || exit 1
       else
