@@ -147,32 +147,44 @@ echo "Building on $(unamer)"
 
 if [ "$(unamer)" = "Windows" ]; then
     cmd <<< 'chcp 437'
-    # Find Python for nmake - must be available as 'python' command
-    # GitHub Actions has py launcher, but nmake needs python.exe in PATH
+    # Find Python for nmake - must be available as 'python' command in Windows PATH
+    # GitHub Actions installs Python in hostedtoolcache, may need explicit setup
+    PYTHON_FOUND=0
+    # Try to find Python via registry or common paths
     if command -v python >/dev/null 2>&1; then
-      : # python already in PATH
-    elif [ -f "/c/Python312/python.exe" ]; then
-      export PATH="/c/Python312:${PATH}"
-    elif [ -f "/c/Python311/python.exe" ]; then
-      export PATH="/c/Python311:${PATH}"
-    elif [ -f "/c/Program Files/Python312/python.exe" ]; then
-      export PATH="/c/Program Files/Python312:${PATH}"
-    elif [ -f "/c/Program Files (x86)/Python312/python.exe" ]; then
-      export PATH="/c/Program Files (x86)/Python312:${PATH}"
-    elif [ -d "/c/hostedtoolcache/windows/Python" ]; then
-      # GitHub Actions hosted toolcache - find Python via cmd
-      PYTHON_DIR=$(cmd /c 'dir "C:\hostedtoolcache\windows\Python" /ad /b 2^>nul' 2>/dev/null | head -1)
-      if [ -n "$PYTHON_DIR" ] && [ -f "/c/hostedtoolcache/windows/Python/${PYTHON_DIR}/x64/python.exe" ]; then
-        export PATH="/c/hostedtoolcache/windows/Python/${PYTHON_DIR}/x64:${PATH}"
-      fi
+      PYTHON_FOUND=1
+    elif [ -d "/c/ProgramData/chocolatey/lib/python3" ]; then
+      for PYBIN in /c/ProgramData/chocolatey/lib/python3*/tools/python.exe; do
+        if [ -f "$PYBIN" ]; then
+          PATH="$(dirname "$PYBIN"):${PATH}"
+          export PATH
+          PYTHON_FOUND=1
+          break
+        fi
+      done
     fi
     export PYTHON_COMMAND="${PYTHON_COMMAND:-python}"
     # Ensure setuptools is installed for Python 3.12+
-    if command -v python >/dev/null 2>&1; then
+    if [ "$PYTHON_FOUND" -eq 1 ]; then
+      echo "Found python at: $(which python)"
       if ! python -c "import setuptools._distutils" 2>/dev/null; then
         echo "Installing setuptools for Python 3.12 compatibility..."
         python -m pip install setuptools --quiet --force-reinstall 2>/dev/null || true
       fi
+elif command -v py >/dev/null 2>&1; then
+      # GitHub Actions typically has py launcher but not python in cmd.exe PATH
+      # nmake Makefiles check: if defined PYTHON_COMMAND python ...
+      # They need python.exe available in cmd PATH, not bash PATH
+      # Try to find python.exe via where command (works in cmd context)
+      PYTHON_WHERE=$(cmd /c 'where python 2^>nul' 2>/dev/null)
+      if [ -n "$PYTHON_WHERE" ]; then
+        : # python exists in cmd PATH
+      else
+        echo "Warning: python.exe not found in cmd PATH - nmake may fail"
+        echo "Consider adding actions/setup-python to your workflow"
+      fi
+    else
+      echo "Warning: python not found - BaseTools nmake may fail without Python in PATH"
     fi
   fi
 
