@@ -173,11 +173,15 @@ jobs:
          shell: cmd
          run: |
            choco install make nasm zip iasl --no-progress
-           python -m pip install setuptools --quiet --force-reinstall
+           py -3 -m pip install setuptools --quiet --force-reinstall
 
        - name: CI Bootstrap
          shell: bash
          run: |
+           PYTHON_PATH=$(cmd /c 'py -3 -c "import sys; print(sys.executable)"' 2>/dev/null | tr -d '\r')
+           if [ -n "$PYTHON_PATH" ]; then
+             export PYTHON_COMMAND="$PYTHON_PATH"
+           fi
            export PATH="/c/ProgramData/chocolatey/bin:$PATH"
            src=$(curl -LfsS https://raw.githubusercontent.com/acidanthera/ocbuild/master/ci-bootstrap.sh) && eval "$src" || exit 1
 
