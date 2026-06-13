@@ -160,15 +160,14 @@ jobs:
     defaults:
       run:
         shell: bash
-    steps:
-      - uses: actions/checkout@v6
-      - uses: TheMrMilchmann/setup-msvc-dev@v4
-        with:
-          arch: x86
-      - uses: actions/setup-python@v6
-        with:
-          python-version: '3.x'
-          architecture: 'x64'
+steps:
+       - uses: actions/checkout@v6
+       - uses: actions/setup-python@v6
+         with:
+           python-version: '3.x'
+       - uses: TheMrMilchmann/setup-msvc-dev@v4
+         with:
+           arch: x86
       - name: Verify Python PATH
         run: |
           echo "Python in PATH: $(which python 2>/dev/null || echo 'NOT FOUND')"
