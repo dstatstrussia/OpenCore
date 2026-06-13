@@ -567,7 +567,12 @@ if [ -d "${WINSDK_BASE}" ]; then
         winSdkUCRTLib="C:\Program Files (x86)\Windows Kits\10\Lib\${WINSDK_VERSION}\ucrt\x64"
         export INCLUDE="${vsMSVCinc};${winSdkUCRT}"
         export LIB="${winSdkLib};${winSdkUCRTLib}"
-        export CL="/WX- /wd4311 /wd4312"
+        # CL prepends to command line - add /WX- to disable warnings as errors
+        if [ -z "${CL}" ]; then
+          export CL="/WX- /wd4311 /wd4312"
+        else
+          export CL="${CL} /WX- /wd4311 /wd4312"
+        fi
       fi
     fi
   fi
