@@ -1,8 +1,8 @@
 /** @file
-  Boot Entry Protocol.
+   Boot Entry Protocol.
 
-  Copyright (c) 2021, Mike Beaton. All rights reserved.<BR>
-  SPDX-License-Identifier: BSD-3-Clause
+   Copyright (c) 2021, Mike Beaton. All rights reserved.<BR>
+   SPDX-License-Identifier: BSD-3-Clause
 **/
 
 #include "BootManagementInternal.h"
@@ -33,12 +33,12 @@ OcLocateBootEntryProtocolHandles (
   EFI_STATUS  Status;
 
   Status = gBS->LocateHandleBuffer (
-                  ByProtocol,
-                  &gOcBootEntryProtocolGuid,
-                  NULL,
-                  EntryProtocolHandleCount,
-                  EntryProtocolHandles
-                  );
+                   ByProtocol,
+                   &gOcBootEntryProtocolGuid,
+                   NULL,
+                   EntryProtocolHandleCount,
+                   EntryProtocolHandles
+                   );
 
   if (EFI_ERROR (Status)) {
     //
@@ -89,12 +89,15 @@ InternalAddEntriesFromProtocol (
 
   Status = EFI_NOT_FOUND;
   if (BootEntryProtocol->GetBootEntries) {
+    DEBUG ((DEBUG_INFO, "BEP: Calling GetBootEntries on handle %p (CreateDefault=%d)\n", 
+      BootEntryProtocolHandle, AddEntriesContext->CreateDefault));
     Status = BootEntryProtocol->GetBootEntries (
-                                  PickerContext,
-                                  ((AddEntriesContext->FileSystem->Handle == OC_CUSTOM_FS_HANDLE) ? NULL : AddEntriesContext->FileSystem->Handle),
-                                  &Entries,
-                                  &NumEntries
-                                  );
+                                   PickerContext,
+                                   ((AddEntriesContext->FileSystem->Handle == OC_CUSTOM_FS_HANDLE) ? NULL : AddEntriesContext->FileSystem->Handle),
+                                   &Entries,
+                                   &NumEntries
+                                   );
+    DEBUG ((DEBUG_INFO, "BEP: GetBootEntries returned %r with %u entries\n", Status, NumEntries));
   }
 
   if (EFI_ERROR (Status)) {
@@ -109,6 +112,12 @@ InternalAddEntriesFromProtocol (
   }
 
   for (EntryIndex = 0; EntryIndex < NumEntries; EntryIndex++) {
+    DEBUG ((DEBUG_INFO, "BEP: Processing entry[%u]: Id=%a, Name=%a, Path=%s\n", 
+      EntryIndex, 
+      Entries[EntryIndex].Id != NULL ? Entries[EntryIndex].Id : "(null)",
+      Entries[EntryIndex].Name != NULL ? Entries[EntryIndex].Name : "(null)",
+      Entries[EntryIndex].Path != NULL ? Entries[EntryIndex].Path : "(null)"));
+    
     if (Entries[EntryIndex].Id == NULL) {
       DEBUG ((DEBUG_WARN, "BEP: Entry->Id is required, ignoring entry.\n"));
     }
@@ -141,6 +150,7 @@ InternalAddEntriesFromProtocol (
         // matches, e.g. older versions of Linux kernel, are normal.
         //
         if (AddEntriesContext->CreateDefault) {
+          DEBUG ((DEBUG_INFO, "BEP: Entry added successfully, returning FALSE to stop search\n"));
           return FALSE;
         }
       }
@@ -156,9 +166,9 @@ InternalAddEntriesFromProtocol (
 
   if (BootEntryProtocol->FreeBootEntries) {
     BootEntryProtocol->FreeBootEntries (
-                         &Entries,
-                         NumEntries
-                         );
+                     &Entries,
+                     NumEntries
+                     );
   }
 
   //
@@ -198,6 +208,8 @@ OcConsumeBootEntryProtocol (
 
   ASSERT (EntryProtocolHandleCount == 0 || EntryProtocolHandles != NULL);
 
+  DEBUG ((DEBUG_INFO, "BEP: Consuming %u boot entry protocol handles\n", EntryProtocolHandleCount));
+
   for (Index = 0; Index < EntryProtocolHandleCount; ++Index) {
     //
     // Previously marked as invalid.
@@ -207,10 +219,10 @@ OcConsumeBootEntryProtocol (
     }
 
     Status = gBS->HandleProtocol (
-                    EntryProtocolHandles[Index],
-                    &gOcBootEntryProtocolGuid,
-                    (VOID **)&BootEntryProtocol
-                    );
+                     EntryProtocolHandles[Index],
+                     &gOcBootEntryProtocolGuid,
+                     (VOID **)&BootEntryProtocol
+                     );
 
     if (EFI_ERROR (Status)) {
       DEBUG ((DEBUG_ERROR, "BEP: HandleProtocol failed - %r\n", Status));
@@ -229,7 +241,9 @@ OcConsumeBootEntryProtocol (
       continue;
     }
 
+    DEBUG ((DEBUG_INFO, "BEP: Calling action on handle %p (Index %u)\n", EntryProtocolHandles[Index], Index));
     if (!Action (PickerContext, EntryProtocolHandles[Index], BootEntryProtocol, Context)) {
+      DEBUG ((DEBUG_INFO, "BEP: Action returned FALSE, stopping\n"));
       break;
     }
   }
@@ -254,6 +268,9 @@ OcAddEntriesFromBootEntryProtocol (
   ASSERT (FileSystem != NULL);
   ASSERT (!CreateDefault || (DefaultEntryId != NULL));
 
+  DEBUG ((DEBUG_INFO, "BEP: OcAddEntriesFromBootEntryProtocol called (CreateDefault=%d, Count=%u)\n", 
+    CreateDefault, EntryProtocolHandleCount));
+
   AddEntriesContext.ReturnStatus    = EFI_NOT_FOUND;
   AddEntriesContext.BootContext     = BootContext;
   AddEntriesContext.FileSystem      = FileSystem;
@@ -269,5 +286,6 @@ OcAddEntriesFromBootEntryProtocol (
     &AddEntriesContext
     );
 
+  DEBUG ((DEBUG_INFO, "BEP: OcAddEntriesFromBootEntryProtocol returning %r\n", AddEntriesContext.ReturnStatus));
   return AddEntriesContext.ReturnStatus;
 }
