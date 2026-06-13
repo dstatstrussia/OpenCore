@@ -176,12 +176,14 @@ jobs:
            choco install make nasm zip iasl --no-progress
            python -m pip install setuptools --quiet --force-reinstall
 
-       - name: CI Bootstrap
-         run: |
-           src=$(curl -LfsS https://raw.githubusercontent.com/acidanthera/ocbuild/master/ci-bootstrap.sh) && eval "$src" || exit 1
-
-       - run: ./build_duet.tool
-       - run: ./build_oc.tool
+- name: CI Bootstrap
+          shell: bash
+          run: |
+            src=$(curl -LfsS https://raw.githubusercontent.com/acidanthera/ocbuild/master/ci-bootstrap.sh) && eval "$src" || exit 1
+        - run: ./build_duet.tool
+          shell: bash
+        - run: ./build_oc.tool
+          shell: bash
 
        - name: Upload to Artifacts
          uses: actions/upload-artifact@v6
