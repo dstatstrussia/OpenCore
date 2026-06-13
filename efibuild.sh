@@ -567,7 +567,7 @@ if [ -d "${WINSDK_BASE}" ]; then
         winSdkUCRTLib="C:\Program Files (x86)\Windows Kits\10\Lib\${WINSDK_VERSION}\ucrt\x64"
         export INCLUDE="${vsMSVCinc};${winSdkUCRT}"
         export LIB="${winSdkLib};${winSdkUCRTLib}"
-        export CL="/wd4311 /wd4312"
+        export CL="/WX- /wd4311 /wd4312"
       fi
     fi
   fi
