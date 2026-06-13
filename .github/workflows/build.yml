@@ -168,7 +168,13 @@ jobs:
       - uses: actions/setup-python@v6
         with:
           python-version: '3.x'
+          architecture: 'x64'
+      - name: Verify Python PATH
+        run: |
+          echo "Python in PATH: $(which python 2>/dev/null || echo 'NOT FOUND')"
+          echo "PATH: $PATH"
       - name: Install Dependencies
+        shell: cmd
         run: |
           choco install make nasm zip iasl --no-progress
           python -m pip install setuptools --quiet --force-reinstall
