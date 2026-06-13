@@ -38,8 +38,6 @@ foreach ($line in $envLines) {
       }
       'LIB' {
         $libPaths = $v -split ';'
-        $ucrtLib = "C:\Program Files (x86)\Windows Kits\10\Lib\${env:WindowsSdkVersion}\ucrt\x64"
-        if (Test-Path $ucrtLib) { $libPaths += $ucrtLib }
       }
     }
   }

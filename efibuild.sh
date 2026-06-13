@@ -505,78 +505,83 @@ if [ "$(unamer)" = "Windows" ]; then
   # Incorrect diagnostic due to action.
   # REF: https://github.com/koalaman/shellcheck/wiki/SC2035
   # shellcheck disable=SC2035
-  VS2022_DIR="$(find * -maxdepth 0 -type d -print -quit)"
-  if [ "${VS2022_DIR}" = "" ]; then
-    echo "No VS2022 MSVC compiler"
-    exit 1
-  fi
-  cd - || exit 1
-  export VS2022_PREFIX="${VS2022_BASEPREFIX}${VS2022_DIR}\\"
-  WINSDK_BASE="/c/Program Files (x86)/Windows Kits/10/bin"
-  WINSDK_VERSION=""
-if [ -d "${WINSDK_BASE}" ]; then
-    for dir in "${WINSDK_BASE}"/*/; do
-      if [ -f "${dir}x86/rc.exe" ]; then
-        WINSDK_PATH_FOR_RC_EXE="${dir}x86"
-        WINSDK_PATH_FOR_RC_EXE="${WINSDK_PATH_FOR_RC_EXE//\//\\}"
-        WINSDK_PATH_FOR_RC_EXE="${WINSDK_PATH_FOR_RC_EXE/\\c\\/C:\\}"
-        WINSDK_VERSION="${dir##*/}"
-        break
-      fi
-    done
-  fi
-  if [ "${WINSDK_PATH_FOR_RC_EXE}" != "" ]; then
-    export WINSDK_PATH_FOR_RC_EXE
-  else
-    echo "Failed to find rc.exe"
-    exit 1
-  fi
-  # Store WINSDK_VERSION for later use in include paths
-  export WINSDK_VERSION
-  BASE_TOOLS="$(pwd)/BaseTools"
-  export PATH="${BASE_TOOLS}/Bin/Win32:${BASE_TOOLS}/BinWrappers/WindowsLike:$PATH"
-  # Extract header paths for cl.exe to work.
-  # Note: distutils.msvc9compiler was removed in Python 3.12, use VsDevCmd.bat instead
-  if command -v powershell >/dev/null 2>&1; then
-    ps_env_file=$(mktemp)
-    # Check VS2022_BUILDTOOLS is set before running PowerShell
-    if [ -n "$VS2022_BUILDTOOLS" ] && [ -f "${ROOTDIR}/Utilities/get_vs_env.ps1" ]; then
-      powershell -NoProfile -File "${ROOTDIR}/Utilities/get_vs_env.ps1" -vsPath "$VS2022_BUILDTOOLS" -outFile "$ps_env_file" 2>/dev/null || true
-    fi
-    if [ -s "$ps_env_file" ]; then
-      while IFS='=' read -r k v; do
-        if [ -n "$k" ] && [ "$k" = "PATH" ]; then
-          # Prepend VS PATH to existing PATH to ensure MSVC tools come first
-          export "PATH=${v}:${PATH}"
-        elif [ -n "$k" ]; then
-          export "$k=$v"
-        fi
-      done < "$ps_env_file"
-      rm -f "$ps_env_file"
-    else
-      # Fallback: use VS2022_PREFIX directly if PowerShell failed
-      if [ -n "$VS2022_PREFIX" ]; then
-        # Convert VS2022_PREFIX to Git Bash path for MSVC bin
-        vsMSVCpath="${VS2022_PREFIX//\//}"
-        vsMSVCbin=$(echo "$vsMSVCpath" | sed 's|C:|/c|' | sed 's|/VC/Tools/MSVC/[0-9]*\.[0-9]*[^/]*/|/bin/Hostx64/x64/|' )
-        export PATH="/c/Program Files (x86)/Windows Kits/10/bin/x86:${vsMSVCbin}:${PATH}"
-        # Also construct INCLUDE and LIB for stdint.h and other headers
-        vsMSVCinc="${VS2022_PREFIX}include"
-        winSdkUCRT="C:\Program Files (x86)\Windows Kits\10\Include\${WINSDK_VERSION}\ucrt"
-        winSdkLib="C:\Program Files (x86)\Windows Kits\10\Lib\${WINSDK_VERSION}\um\x64"
-        winSdkUCRTLib="C:\Program Files (x86)\Windows Kits\10\Lib\${WINSDK_VERSION}\ucrt\x64"
-        export INCLUDE="${vsMSVCinc};${winSdkUCRT}"
-        export LIB="${winSdkLib};${winSdkUCRTLib}"
-        # CL prepends to command line - add /WX- to disable warnings as errors
-        if [ -z "${CL}" ]; then
-          export CL="/WX- /wd4311 /wd4312"
-        else
-          export CL="${CL} /WX- /wd4311 /wd4312"
-        fi
-      fi
-    fi
-  fi
-fi
+VS2022_DIR="$(find * -maxdepth 0 -type d -print -quit)"
+   if [ "${VS2022_DIR}" = "" ]; then
+     echo "No VS2022 MSVC compiler"
+     exit 1
+   fi
+   cd - || exit 1
+   export VS2022_PREFIX="${VS2022_BASEPREFIX}${VS2022_DIR}\\"
+   WINSDK_BASE="/c/Program Files (x86)/Windows Kits/10/bin"
+   WINSDK_VERSION=""
+   if [ -d "${WINSDK_BASE}" ]; then
+     for dir in "${WINSDK_BASE}"/*/; do
+       if [ -f "${dir}x86/rc.exe" ]; then
+         WINSDK_PATH_FOR_RC_EXE="${dir}x86"
+         WINSDK_PATH_FOR_RC_EXE="${WINSDK_PATH_FOR_RC_EXE//\//\\}"
+         WINSDK_PATH_FOR_RC_EXE="${WINSDK_PATH_FOR_RC_EXE/\\c\\/C:\\}"
+         WINSDK_VERSION="${dir##*/}"
+         break
+       fi
+     done
+   fi
+   if [ "${WINSDK_PATH_FOR_RC_EXE}" != "" ]; then
+     export WINSDK_PATH_FOR_RC_EXE
+   else
+     echo "Failed to find rc.exe"
+     exit 1
+   fi
+   # Store WINSDK_VERSION for later use in include paths
+   export WINSDK_VERSION
+   BASE_TOOLS="$(pwd)/BaseTools"
+   export PATH="${BASE_TOOLS}/Bin/Win32:${BASE_TOOLS}/BinWrappers/WindowsLike:$PATH"
+   # Extract header paths for cl.exe to work.
+   # Note: distutils.msvc9compiler was removed in Python 3.12, use VsDevCmd.bat instead
+   if command -v powershell >/dev/null 2>&1; then
+     ps_env_file=$(mktemp)
+     # Check VS2022_BUILDTOOLS is set before running PowerShell
+     if [ -n "$VS2022_BUILDTOOLS" ] && [ -f "${ROOTDIR}/Utilities/get_vs_env.ps1" ]; then
+       powershell -NoProfile -File "${ROOTDIR}/Utilities/get_vs_env.ps1" -vsPath "$VS2022_BUILDTOOLS" -outFile "$ps_env_file" 2>/dev/null || true
+     fi
+     if [ -s "$ps_env_file" ]; then
+       while IFS= read -r line; do
+         # Find first '=' and split properly to handle Windows paths with '='
+         if [[ "$line" == *"="* ]]; then
+           k="${line%%=*}"
+           v="${line#*=}"
+           if [ -n "$k" ] && [ "$k" = "PATH" ]; then
+             # Prepend VS PATH to existing PATH to ensure MSVC tools come first
+             export "PATH=${v}:${PATH}"
+           elif [ -n "$k" ]; then
+             export "$k=$v"
+           fi
+         fi
+       done < "$ps_env_file"
+       rm -f "$ps_env_file"
+     else
+       # Fallback: use VS2022_PREFIX directly if PowerShell failed
+       if [ -n "$VS2022_PREFIX" ]; then
+         # Convert VS2022_PREFIX to Git Bash path for MSVC bin
+         vsMSVCpath="${VS2022_PREFIX//\//}"
+         vsMSVCbin=$(echo "$vsMSVCpath" | sed 's|C:|/c|' | sed 's|/VC/Tools/MSVC/[0-9]*\.[0-9]*[^/]*/|/bin/Hostx64/x64/|' )
+         export PATH="/c/Program Files (x86)/Windows Kits/10/bin/x86:${vsMSVCbin}:${PATH}"
+         # Also construct INCLUDE and LIB for stdint.h and other headers
+         vsMSVCinc="/c/Program Files (x86)/Microsoft Visual Studio/2022/BuildTools/VC/Tools/MSVC/${VS2022_DIR}/include"
+         winSdkUCRT="C:\\Program Files (x86)\\Windows Kits\\10\\Include\\${WINSDK_VERSION}\\ucrt"
+         winSdkLib="C:\\Program Files (x86)\\Windows Kits\\10\\Lib\\${WINSDK_VERSION}\\um\\x64"
+         winSdkUCRTLib="C:\\Program Files (x86)\\Windows Kits\\10\\Lib\\${WINSDK_VERSION}\\ucrt\\x64"
+         export INCLUDE="${vsMSVCinc};${winSdkUCRT}"
+         export LIB="${winSdkLib};${winSdkUCRTLib}"
+         # _CL_ appends flags after command line - disable warnings as errors and C4311/C4312/C4267
+         if [ -z "${_CL_}" ]; then
+           export _CL_="/WX- /wd4311 /wd4312 /wd4267"
+         else
+           export _CL_="${_CL_} /WX- /wd4311 /wd4312 /wd4267"
+         fi
+       fi
+     fi
+   fi
+ fi
 
 if [ "$NEW_BUILDSYSTEM" != "1" ]; then
   if [ "$SKIP_TESTS" != "1" ]; then
