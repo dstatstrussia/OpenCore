@@ -149,22 +149,18 @@ if [ "$(unamer)" = "Windows" ]; then
     cmd <<< 'chcp 437'
     # Find Python for nmake - must be available as 'python' command in Windows PATH
     # GitHub Actions installs Python in hostedtoolcache, may need explicit setup
-    PYTHON_FOUND=0
-    # Try to find Python via registry or common paths
     # Note: command -v python works in bash but not in cmd, need to check cmd too
     if cmd /c 'where python >/dev/null 2>&1' 2>/dev/null; then
-      PYTHON_FOUND=1
       echo "Found python in cmd PATH at: $(cmd /c 'where python' 2>/dev/null | tr -d '\r')"
     elif command -v python >/dev/null 2>&1; then
       # Python found in bash but not cmd - this is GitHub Actions behavior
-      PYTHON_FOUND=1
       echo "Found python at: $(which python) (bash only, will resolve for cmd)"
     elif [ -d "/c/ProgramData/chocolatey/lib/python3" ]; then
       for PYBIN in /c/ProgramData/chocolatey/lib/python3*/tools/python.exe; do
         if [ -f "$PYBIN" ]; then
           PATH="$(dirname "$PYBIN"):${PATH}"
           export PATH
-          PYTHON_FOUND=1
+          echo "Found python in chocolatey at: $PYBIN"
           break
         fi
       done
@@ -174,21 +170,15 @@ if [ "$(unamer)" = "Windows" ]; then
       # python is in cmd PATH, leave PYTHON_COMMAND unset - Makefile will use 'python'
       :
     elif command -v py >/dev/null 2>&1; then
-      # Use py launcher to get actual python.exe path since python is not in cmd PATH
-      PYTHON_PATH=$(cmd /c 'py -3 -c "import sys; print(sys.executable)"' 2>/dev/null | tr -d '\r')
-      echo "DEBUG: py -3 returned '$PYTHON_PATH'"
-      if [ -n "$PYTHON_PATH" ] && [ "$PYTHON_PATH" != "python" ] && [ "$PYTHON_PATH" != "python3" ]; then
+      # Use py launcher to get the actual python.exe directory and construct full path
+      PYTHON_DIR=$(cmd /c 'py -3 -c "import os, sys; print(os.path.dirname(sys.executable))"' 2>/dev/null | tr -d '\r')
+      echo "DEBUG: Python directory is '$PYTHON_DIR'"
+      if [ -n "$PYTHON_DIR" ] && [[ "$PYTHON_DIR" == *":"* ]]; then
         # PYTHON_COMMAND must be a full Windows path for nmake
-        export PYTHON_COMMAND="$PYTHON_PATH"
+        export PYTHON_COMMAND="${PYTHON_DIR}\\python.exe"
         echo "Set PYTHON_COMMAND=$PYTHON_COMMAND for nmake compatibility"
       else
-        echo "Warning: py returned '$PYTHON_PATH' - not a full path, trying to find python.exe manually"
-        # Try to find python.exe in typical locations
-        PYTHON_FALLBACK=$(cmd /c 'where python 2^>nul' 2>/dev/null | tr -d '\r' | head -1)
-        if [ -n "$PYTHON_FALLBACK" ]; then
-          export PYTHON_COMMAND="$PYTHON_FALLBACK"
-          echo "Set PYTHON_COMMAND=$PYTHON_COMMAND (fallback)"
-        fi
+        echo "Warning: Could not determine Python location - nmake may fail"
       fi
     else
       echo "Warning: python not available - nmake may fail"
