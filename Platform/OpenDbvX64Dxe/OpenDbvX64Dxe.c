@@ -31,7 +31,7 @@ OcGetDbtBootEntries (
   OUT       UINTN                   *NumEntries
   )
 {
-EFI_STATUS  Status;
+  EFI_STATUS  Status;
   EFI_SIMPLE_FILE_SYSTEM_PROTOCOL  *FileSystem;
   EFI_FILE_PROTOCOL                *RootDirectory;
   EFI_FILE_PROTOCOL                *BootDirectory;
@@ -39,6 +39,7 @@ EFI_STATUS  Status;
   UINTN                            FileInfoSize;
   UINTN                            EntryCount;
   OC_PICKER_ENTRY                  *NewEntries;
+  BOOLEAN                          IsMacSoftwareUpdate = FALSE;
 
   ASSERT (PickerContext != NULL);
   ASSERT (Entries != NULL);
@@ -68,7 +69,7 @@ EFI_STATUS  Status;
   EntryCount = 0;
 
   //
-  // Look for macOS Installer (com.apple.installer or com.apple.MobileAsset) in boot directories
+  // Look for macOS Installer (com.apple.installer) in boot directories
   //
   Status = RootDirectory->Open (
                            RootDirectory,
@@ -102,12 +103,12 @@ EFI_STATUS  Status;
   //
   if (EntryCount == 0) {
     Status = RootDirectory->Open (
-                             RootDirectory,
-                             &BootDirectory,
-                             L"\\SharedSupport\\com_apple_MobileAsset_MacSoftwareUpdate",
-                             EFI_FILE_MODE_READ,
-                             0
-                             );
+                              RootDirectory,
+                              &BootDirectory,
+                              L"\\SharedSupport\\com_apple_MobileAsset_MacSoftwareUpdate",
+                              EFI_FILE_MODE_READ,
+                              0
+                              );
 
     if (!EFI_ERROR (Status)) {
       Status = EFI_NOT_FOUND;
@@ -121,6 +122,7 @@ EFI_STATUS  Status;
           BootDirectory->GetInfo (BootDirectory, &gEfiFileInfoGuid, &FileInfoSize, FileInfo);
           if ((FileInfo->Attribute & EFI_FILE_DIRECTORY) != 0) {
             ++EntryCount;
+            IsMacSoftwareUpdate = TRUE;
           }
           FreePool (FileInfo);
         }
@@ -142,6 +144,14 @@ EFI_STATUS  Status;
     NewEntries[0].Id = AllocateCopyPool (AsciiStrSize ("macOS-Installer"), "macOS-Installer");
     NewEntries[0].Name = AllocateCopyPool (AsciiStrSize ("macOS Installer (Translated)"), "macOS Installer (Translated)");
     NewEntries[0].Flavour = AllocateCopyPool (AsciiStrSize ("OpenDbt"), "OpenDbt");
+    //
+    // For macOS 27+ MobileAsset installer, use alternate boot path
+    //
+    if (IsMacSoftwareUpdate) {
+      NewEntries[0].Path = AllocateCopyPool (AsciiStrSize ("\\SharedSupport\\boot.efi"), "\\SharedSupport\\boot.efi");
+    } else {
+      NewEntries[0].Path = AllocateCopyPool (AsciiStrSize ("\\System\\Library\\CoreServices\\boot.efi"), "\\System\\Library\\CoreServices\\boot.efi");
+    }
 
     *Entries    = NewEntries;
     *NumEntries = EntryCount;
@@ -174,6 +184,9 @@ OcFreeDbtBootEntries (
     }
     if ((*Entries)[Index].Flavour != NULL) {
       FreePool ((VOID *)(UINTN)(*Entries)[Index].Flavour);
+    }
+    if ((*Entries)[Index].Path != NULL) {
+      FreePool ((VOID *)(UINTN)(*Entries)[Index].Path);
     }
   }
 
