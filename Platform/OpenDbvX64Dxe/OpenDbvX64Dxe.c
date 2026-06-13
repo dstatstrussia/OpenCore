@@ -150,6 +150,63 @@ OcGetDbtBootEntries (
     }
   }
 
+  //
+  // Also look for macOS 27+ installer dyld cache path (x86_64 cache in installer)
+  // This handles cases where installer has dyld shared cache at /System/Library/dyld
+  // The dyld installer uses traditional boot.efi path in CoreServices
+  //
+  if (EntryCount == 0) {
+    DEBUG ((DEBUG_INFO, "DBT: Looking for macOS 27+ dyld cache installer at %s\n", L"\\System\\Library\\dyld"));
+    Status = RootDirectory->Open (
+                             RootDirectory,
+                             &BootDirectory,
+                             L"\\System\\Library\\dyld",
+                             EFI_FILE_MODE_READ,
+                             0
+                             );
+
+    if (!EFI_ERROR (Status)) {
+      DEBUG ((DEBUG_INFO, "DBT: Found dyld cache directory, checking for x86_64 cache\n"));
+
+      FileInfoSize = 0;
+      BootDirectory->GetInfo (BootDirectory, &gEfiFileInfoGuid, &FileInfoSize, NULL);
+      if (FileInfoSize > 0) {
+        FileInfo = AllocatePool (FileInfoSize);
+        if (FileInfo != NULL) {
+          BootDirectory->GetInfo (BootDirectory, &gEfiFileInfoGuid, &FileInfoSize, FileInfo);
+          if ((FileInfo->Attribute & EFI_FILE_DIRECTORY) != 0) {
+            EFI_FILE_PROTOCOL *DylibDir;
+            // Check if this is an installer by looking for shared cache files
+            Status = BootDirectory->Open (
+                                     BootDirectory,
+                                     &DylibDir,
+                                     L"shared_cache.x86_64h",
+                                     EFI_FILE_MODE_READ,
+                                     0
+                                     );
+            if (EFI_ERROR (Status)) {
+              Status = BootDirectory->Open (
+                                       BootDirectory,
+                                       &DylibDir,
+                                       L"shared_cache.x86_64",
+                                       EFI_FILE_MODE_READ,
+                                       0
+                                       );
+            }
+            if (!EFI_ERROR (Status)) {
+              DEBUG ((DEBUG_INFO, "DBT: Found x86_64 dyld shared cache, EntryCount++\n"));
+              ++EntryCount;
+              // Still use traditional boot.efi path for dyld installer
+            }
+            DylibDir->Close (DylibDir);
+          }
+          FreePool (FileInfo);
+        }
+      }
+      BootDirectory->Close (BootDirectory);
+    }
+  }
+
   DEBUG ((DEBUG_INFO, "DBT: Installer scan complete - EntryCount=%u, IsMacSoftwareUpdate=%d\n", EntryCount, IsMacSoftwareUpdate));
   RootDirectory->Close (RootDirectory);
 
