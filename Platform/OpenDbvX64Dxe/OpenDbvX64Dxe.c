@@ -49,20 +49,25 @@ OcGetDbtBootEntries (
   *NumEntries = 0;
 
   if (Device == NULL) {
+    DEBUG ((DEBUG_INFO, "DBT: Device is NULL, returning EFI_NOT_FOUND\n"));
     return EFI_NOT_FOUND;
   }
 
+  DEBUG ((DEBUG_INFO, "DBT: GetBootEntries called for Device %p\n", Device));
+
   Status = gBS->HandleProtocol (
-                  Device,
-                  &gEfiSimpleFileSystemProtocolGuid,
-                  (VOID **)&FileSystem
-                  );
+                   Device,
+                   &gEfiSimpleFileSystemProtocolGuid,
+                   (VOID **)&FileSystem
+                   );
   if (EFI_ERROR (Status)) {
+    DEBUG ((DEBUG_INFO, "DBT: HandleProtocol failed - %r\n", Status));
     return Status;
   }
 
   Status = FileSystem->OpenVolume (FileSystem, &RootDirectory);
   if (EFI_ERROR (Status)) {
+    DEBUG ((DEBUG_INFO, "DBT: OpenVolume failed - %r\n", Status));
     return Status;
   }
 
@@ -71,6 +76,7 @@ OcGetDbtBootEntries (
   //
   // Look for macOS Installer (com.apple.installer) in boot directories
   //
+  DEBUG ((DEBUG_INFO, "DBT: Looking for traditional installer at %s\n", L"\\System\\Library\\CoreServices\\com.apple.installer"));
   Status = RootDirectory->Open (
                            RootDirectory,
                            &BootDirectory,
@@ -80,6 +86,7 @@ OcGetDbtBootEntries (
                            );
 
   if (!EFI_ERROR (Status)) {
+    DEBUG ((DEBUG_INFO, "DBT: Found traditional installer directory\n"));
     Status = EFI_NOT_FOUND;
 
     FileInfoSize = 0;
@@ -90,27 +97,34 @@ OcGetDbtBootEntries (
       if (FileInfo != NULL) {
         BootDirectory->GetInfo (BootDirectory, &gEfiFileInfoGuid, &FileInfoSize, FileInfo);
         if ((FileInfo->Attribute & EFI_FILE_DIRECTORY) != 0) {
+          DEBUG ((DEBUG_INFO, "DBT: Traditional installer is a directory, EntryCount++\n"));
           ++EntryCount;
+        } else {
+          DEBUG ((DEBUG_INFO, "DBT: Traditional installer is NOT a directory (attributes: 0x%x)\n", FileInfo->Attribute));
         }
         FreePool (FileInfo);
       }
     }
     BootDirectory->Close (BootDirectory);
+  } else {
+    DEBUG ((DEBUG_INFO, "DBT: Traditional installer not found - %r\n", Status));
   }
 
   //
   // Also look for macOS 27+ installer (com.apple.MobileAsset) in SharedSupport
   //
   if (EntryCount == 0) {
+    DEBUG ((DEBUG_INFO, "DBT: Looking for macOS 27+ MobileAsset installer at %s\n", L"\\SharedSupport\\com_apple_MobileAsset_MacSoftwareUpdate"));
     Status = RootDirectory->Open (
-                              RootDirectory,
-                              &BootDirectory,
-                              L"\\SharedSupport\\com_apple_MobileAsset_MacSoftwareUpdate",
-                              EFI_FILE_MODE_READ,
-                              0
-                              );
+                             RootDirectory,
+                             &BootDirectory,
+                             L"\\SharedSupport\\com_apple_MobileAsset_MacSoftwareUpdate",
+                             EFI_FILE_MODE_READ,
+                             0
+                             );
 
     if (!EFI_ERROR (Status)) {
+      DEBUG ((DEBUG_INFO, "DBT: Found macOS 27+ MobileAsset installer directory, IsMacSoftwareUpdate = TRUE\n"));
       Status = EFI_NOT_FOUND;
 
       FileInfoSize = 0;
@@ -121,19 +135,26 @@ OcGetDbtBootEntries (
         if (FileInfo != NULL) {
           BootDirectory->GetInfo (BootDirectory, &gEfiFileInfoGuid, &FileInfoSize, FileInfo);
           if ((FileInfo->Attribute & EFI_FILE_DIRECTORY) != 0) {
+            DEBUG ((DEBUG_INFO, "DBT: MobileAsset installer is a directory, EntryCount++, IsMacSoftwareUpdate=TRUE\n"));
             ++EntryCount;
             IsMacSoftwareUpdate = TRUE;
+          } else {
+            DEBUG ((DEBUG_INFO, "DBT: MobileAsset installer is NOT a directory (attributes: 0x%x)\n", FileInfo->Attribute));
           }
           FreePool (FileInfo);
         }
       }
       BootDirectory->Close (BootDirectory);
+    } else {
+      DEBUG ((DEBUG_INFO, "DBT: macOS 27+ MobileAsset installer not found - %r\n", Status));
     }
   }
 
+  DEBUG ((DEBUG_INFO, "DBT: Installer scan complete - EntryCount=%u, IsMacSoftwareUpdate=%d\n", EntryCount, IsMacSoftwareUpdate));
   RootDirectory->Close (RootDirectory);
 
   if (EntryCount > 0) {
+    DEBUG ((DEBUG_INFO, "DBT: Creating %u installer entry(s)\n", EntryCount));
     NewEntries = AllocatePool (sizeof (OC_PICKER_ENTRY) * EntryCount);
     if (NewEntries == NULL) {
       return EFI_OUT_OF_RESOURCES;
@@ -148,8 +169,10 @@ OcGetDbtBootEntries (
     // For macOS 27+ MobileAsset installer, use alternate boot path
     //
     if (IsMacSoftwareUpdate) {
+      DEBUG ((DEBUG_INFO, "DBT: Using macOS 27+ MobileAsset boot path: %s\n", "\\SharedSupport\\boot.efi"));
       NewEntries[0].Path = AllocateCopyPool (AsciiStrSize ("\\SharedSupport\\boot.efi"), "\\SharedSupport\\boot.efi");
     } else {
+      DEBUG ((DEBUG_INFO, "DBT: Using traditional installer boot path: %s\n", "\\System\\Library\\CoreServices\\boot.efi"));
       NewEntries[0].Path = AllocateCopyPool (AsciiStrSize ("\\System\\Library\\CoreServices\\boot.efi"), "\\System\\Library\\CoreServices\\boot.efi");
     }
 
@@ -158,6 +181,7 @@ OcGetDbtBootEntries (
     return EFI_SUCCESS;
   }
 
+  DEBUG ((DEBUG_INFO, "DBT: No installer found, returning EFI_NOT_FOUND\n"));
   return EFI_NOT_FOUND;
 }
 
@@ -221,11 +245,11 @@ OpenDbvX64EntryPoint (
   // Install boot entry protocol to provide installer entries
   //
   Status = gBS->InstallMultipleProtocolInterfaces (
-                  &ImageHandle,
-                  &gOcBootEntryProtocolGuid,
-                  &mDbtBootEntryProtocol,
-                  NULL
-                  );
+                   &ImageHandle,
+                   &gOcBootEntryProtocolGuid,
+                   &mDbtBootEntryProtocol,
+                   NULL
+                   );
 
   if (EFI_ERROR (Status)) {
     DbtFreeContext (gDbtContext);

@@ -982,18 +982,21 @@ AddBootEntryFromBless (
   // On failure obtain normal bless paths.
   //
   if (EFI_ERROR (Status)) {
+    DEBUG ((DEBUG_INFO, "OCB: No custom boot paths, getting bless paths on handle %p\n", FileSystem->Handle));
     Status = OcBootPolicyGetBootFileEx (
                FileSystem->Handle,
                PredefinedPaths,
                NumPredefinedPaths,
                &DevicePath
                );
+    DEBUG ((DEBUG_INFO, "OCB: OcBootPolicyGetBootFileEx returned %r, DevicePath=%p\n", Status, DevicePath));
   }
 
   //
   // If both custom and normal found nothing, then nothing is blessed.
   //
   if (EFI_ERROR (Status)) {
+    DEBUG ((DEBUG_INFO, "OCB: No blessed entries found on this filesystem\n"));
     return Status;
   }
 
