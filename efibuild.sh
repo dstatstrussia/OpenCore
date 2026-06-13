@@ -544,12 +544,12 @@ if [ "$(unamer)" = "Windows" ]; then
        powershell -NoProfile -File "${ROOTDIR}/Utilities/get_vs_env.ps1" -vsPath "$VS2022_BUILDTOOLS" -outFile "$ps_env_file" 2>/dev/null || true
      fi
      if [ -s "$ps_env_file" ]; then
-       # Source the file to export variables - handles spaces correctly
        while IFS= read -r line; do
          # Skip empty lines
          [ -z "$line" ] && continue
-         # Source each line as an assignment
-         eval "$line"
+         # Source each line as an assignment - values are quoted in PowerShell
+         # But we need to handle the case where PowerShell didn't quote them
+         eval "export $line"
        done < "$ps_env_file"
        rm -f "$ps_env_file"
      else
