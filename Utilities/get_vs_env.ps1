@@ -5,7 +5,7 @@ $batPath = Join-Path $vsPath "Common7\Tools\VsDevCmd.bat"
 $tempFile = [System.IO.Path]::GetTempFileName()
 
 # Use cmd /c to run VsDevCmd.bat and capture environment
-cmd /v:on /c "`"$batPath`" -arch=amd64 -no_logo > nul && set > `"$tempFile`"" 2>$null
+cmd /v:on /c "`"$batPath`" -arch=amd64 -host_arch=amd64 -no_logo > nul && set > `"$tempFile`"" 2>$null
 
 if (-not (Test-Path $tempFile)) {
   exit 1
@@ -33,7 +33,7 @@ foreach ($line in $envLines) {
         $vsPaths = $v -split ';' | Where-Object { $_ -match 'Visual Studio|Windows Kits|VC\\Tools\\MSVC' }
       }
       'INCLUDE' {
-        $includePaths = $v -split ';'
+        $includePaths = $v -split ';' | Where-Object { $_ -notmatch 'IA32|Win32' }
       }
       'LIB' {
         $libPaths = $v -split ';'
@@ -62,6 +62,8 @@ if ($libPaths) {
   $convertedLib = ($libPaths -join ';')
   "LIB=$convertedLib" | Out-File -FilePath $outFile -Encoding ascii -Append
 }
+# Disable C4311 warning for IA32 header compatibility in host tools
+"CL=-wd4311" | Out-File -FilePath $outFile -Encoding ascii -Append
 # Also output the Windows Kit version for dynamic paths
 if (Test-Path "${env:ProgramFiles(x86)}\Windows Kits\10\Lib") {
   $kitVersions = Get-ChildItem "${env:ProgramFiles(x86)}\Windows Kits\10\Lib" -Directory | Sort-Object Name
