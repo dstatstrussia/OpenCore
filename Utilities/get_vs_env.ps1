@@ -6,19 +6,29 @@ $tempFile = [System.IO.Path]::GetTempFileName()
 cmd /v:on /c "`"$batPath`" -arch=amd64 -host_arch=amd64 -no_logo > nul && set > `"$tempFile`"" 2>$null
 
 if (-not (Test-Path $tempFile)) { exit 1 }
-$envLines = Get-Content $tempFile -ErrorAction SilentlyContinue
+$envContent = Get-Content $tempFile -Raw -ErrorAction SilentlyContinue
 Remove-Item $tempFile -ErrorAction SilentlyContinue
-if ([string]::IsNullOrEmpty($envLines)) { exit 1 }
+if ([string]::IsNullOrEmpty($envContent)) { exit 1 }
+# Split on any line ending (CRLF or LF) to handle both Windows and Unix
+# Use explicit string replacement to handle edge cases
+$envContent = $envContent -replace "`r`n", "`n"
+$envContent = $envContent -replace "`r", "`n"
+$envLines = $envContent -split "`n" | Where-Object { $_ -match '=' }
 
 $writer = [System.IO.StreamWriter]::new($outFile, $false, [System.Text.Encoding]::ASCII)
+# Ensure Unix line endings
+$writer.NewLine = "`n"
 $vsPaths = @()
 
 foreach ($line in $envLines) {
+  # Strip any trailing carriage return before matching
+  $line = $line.Trim()
   if ($line -match '^([A-Za-z]+)=(.*)$') {
     $k = $matches[1].ToUpper()
     $v = $matches[2].Trim()
-    switch ($k) {
-      'PATH' { $vsPaths = $v -split ';' | Where-Object { $_ -match 'Visual Studio|Windows Kits|VC' -and $_ -notmatch 'Git' } }
+    # Store PATH and CL values, but we'll process them separately
+    if ($k -eq 'PATH') {
+      $vsPaths = $v -split ';' | Where-Object { $_ -match 'Visual Studio|Windows Kits|VC' -and $_ -notmatch 'Git' }
     }
   }
 }
