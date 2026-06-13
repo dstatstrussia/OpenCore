@@ -178,18 +178,22 @@ jobs:
        - name: CI Bootstrap
          shell: bash
          run: |
-           # Get Python path for nmake - actions/setup-python doesn't add python to cmd PATH
            echo "=== Python detection ==="
-           cmd /c 'py -0'
            PYTHON_EXE=$(cmd /c 'py -3 -c "import sys; print(sys.executable)"' 2>/dev/null | tr -d '\r')
            echo "py -3 returned: '$PYTHON_EXE'"
-           if [ -n "$PYTHON_EXE" ]; then
-             # Ensure it's a valid path containing python.exe
-             PYTHON_EXE=$(cmd /c "echo $PYTHON_EXE" 2>/dev/null | tr -d '\r')
+           if [ -n "$PYTHON_EXE" ] && [ "$PYTHON_EXE" != "python" ] && [ "$PYTHON_EXE" != "python3" ]; then
              export PYTHON_COMMAND="$PYTHON_EXE"
              echo "PYTHON_COMMAND set to: $PYTHON_COMMAND"
            else
-             echo "Warning: Could not determine python.exe path, nmake may fail"
+             echo "Invalid PYTHON_EXE, trying fallback..."
+             PYTHON_EXE=$(cmd /c 'py -3 -c "import os, sys; print(os.path.join(os.path.dirname(sys.executable), \"python.exe\"))"' 2>/dev/null | tr -d '\r')
+             echo "Fallback gave: '$PYTHON_EXE'"
+             if [ -n "$PYTHON_EXE" ] && [ "$PYTHON_EXE" != "python" ] && [ "$PYTHON_EXE" != "python3" ]; then
+               export PYTHON_COMMAND="$PYTHON_EXE"
+               echo "PYTHON_COMMAND set to: $PYTHON_COMMAND"
+             else
+               echo "Warning: Could not determine python.exe path, nmake may fail"
+             fi
            fi
            export PATH="/c/ProgramData/chocolatey/bin:$PATH"
            src=$(curl -LfsS https://raw.githubusercontent.com/acidanthera/ocbuild/master/ci-bootstrap.sh) && eval "$src" || exit 1
