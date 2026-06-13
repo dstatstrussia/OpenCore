@@ -626,14 +626,20 @@ WINSDK_PATH_FOR_RC_EXE="${WINSDK_PATH_FOR_RC_EXE/\\c\\/C:\\}"
   fi
 
 if [ "$NEW_BUILDSYSTEM" != "1" ]; then
-  if [ "$SKIP_TESTS" != "1" ]; then
-    echo "Testing..."
-    if [ "$(unamer)" = "Windows" ]; then
-      echo "Running nmake for Windows (unamer=Windows)"
-      cd BaseTools || exit 1
-      nmake        || exit 1
-      cd ..        || exit 1
-    else
+   if [ "$SKIP_TESTS" != "1" ]; then
+echo "Testing..."
+      if [ "$(unamer)" = "Windows" ]; then
+        echo "Running nmake for Windows (unamer=Windows)"
+        cd BaseTools || exit 1
+        # Ensure MSVC tools take precedence over Git Bash /usr/bin tools for nmake
+        # VS2022_PREFIX is already set - construct bin path and prepend to PATH
+        MSVC_BIN=$(echo "${VS2022_PREFIX}/bin/Hostx64/x64" | sed 's|\\|/|g' | sed 's|^C:|^/c|' | sed 's|^D:|^/d|')
+        if [ -n "$MSVC_BIN" ]; then
+          export PATH="${MSVC_BIN}:${PATH}"
+        fi
+        nmake        || exit 1
+        cd ..        || exit 1
+      else
       make -C BaseTools -j || exit 1
     fi
     touch UDK.ready
