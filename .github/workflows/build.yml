@@ -160,17 +160,15 @@ jobs:
       CC: gcc
     steps:
        - uses: actions/checkout@v6
+
        - uses: actions/setup-python@v6
          with:
            python-version: '3.x'
+
        - uses: TheMrMilchmann/setup-msvc-dev@v4
          with:
            arch: x86
-       - name: Verify Python in cmd
-         shell: cmd
-         run: |
-           where python
-           echo PYTHON in PATH should be found above
+
        - name: Install Dependencies
          shell: cmd
          run: |
@@ -180,12 +178,20 @@ jobs:
        - name: CI Bootstrap
          shell: bash
          run: |
+           export PATH="/c/ProgramData/chocolatey/bin:$PATH"
            src=$(curl -LfsS https://raw.githubusercontent.com/acidanthera/ocbuild/master/ci-bootstrap.sh) && eval "$src" || exit 1
 
-       - run: ./build_duet.tool
+       - name: Build Duet
          shell: bash
-       - run: ./build_oc.tool
+         run: |
+           export PATH="/c/ProgramData/chocolatey/bin:$PATH"
+           ./build_duet.tool
+
+       - name: Build OpenCore
          shell: bash
+         run: |
+           export PATH="/c/ProgramData/chocolatey/bin:$PATH"
+           ./build_oc.tool
 
        - name: Upload to Artifacts
          uses: actions/upload-artifact@v6
