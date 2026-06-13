@@ -18,7 +18,6 @@ if ([string]::IsNullOrEmpty($envLines)) {
 }
 
 # Write output with Unix line endings for bash parsing
-Set-Content -Path $outFile -Value $null -Encoding ascii
 $writer = [System.IO.StreamWriter]::new($outFile, $false, [System.Text.Encoding]::ASCII)
 
 $vsPaths = @()
@@ -34,7 +33,7 @@ foreach ($line in $envLines) {
         $vsPaths = $v -split ';' | Where-Object { $_ -match 'Visual Studio|Windows Kits|VC\\Tools\\MSVC' }
       }
       'INCLUDE' {
-        $includePaths = $v -split ';' | Where-Object { $_ -notmatch 'IA32|Win32' }
+        $includePaths = $v -split ';' | Where-Object { $_ -notmatch 'IA32|Ia32|Win32|i386' }
       }
       'LIB' {
         $libPaths = $v -split ';'
@@ -65,11 +64,7 @@ if ($libPaths) {
 }
 
 # Disable warnings as errors and C4311/C4312 for IA32 header compatibility in host tools
-$clFlags = "/WX- /wd4311 /wd4312"
-if ($env:CL) {
-  $clFlags = "$clFlags $env:CL"
-}
-$writer.WriteLine("CL=$clFlags")
+$writer.WriteLine("CL=/WX- /wd4311 /wd4312")
 
 # Also output the Windows Kit version for dynamic paths
 if (Test-Path "${env:ProgramFiles(x86)}\Windows Kits\10\Lib") {
