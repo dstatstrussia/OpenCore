@@ -544,27 +544,14 @@ if [ "$(unamer)" = "Windows" ]; then
        powershell -NoProfile -File "${ROOTDIR}/Utilities/get_vs_env.ps1" -vsPath "$VS2022_BUILDTOOLS" -outFile "$ps_env_file" 2>/dev/null || true
      fi
      if [ -s "$ps_env_file" ]; then
+       # Source the file to export variables - handles spaces correctly
        while IFS= read -r line; do
-         # Find first '=' and split properly to handle Windows paths with '='
-         if [[ "$line" == *"="* ]]; then
-           k="${line%%=*}"
-           v="${line#*=}"
-           if [ -n "$k" ] && [ "$k" = "PATH" ]; then
-             # Prepend VS PATH to existing PATH to ensure MSVC tools come first
-             export "PATH=${v}:${PATH}"
-           elif [ -n "$k" ]; then
-             # Store in array for later safe export with proper quoting
-             declare -g "$k=$v"
-           fi
-         fi
+         # Skip empty lines
+         [ -z "$line" ] && continue
+         # Source each line as an assignment
+         eval "$line"
        done < "$ps_env_file"
        rm -f "$ps_env_file"
-       # Re-export with proper quoting after the while loop
-       for var in PATH INCLUDE LIB _CL_ WINSDK_VERSION; do
-         if [ -n "${!var}" ]; then
-           export "${var}=${!var}"
-         fi
-       done
      else
        # Fallback: use VS2022_PREFIX directly if PowerShell failed
        if [ -n "$VS2022_PREFIX" ]; then
