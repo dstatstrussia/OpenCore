@@ -171,17 +171,24 @@ if [ "$(unamer)" = "Windows" ]; then
     fi
     # Set PYTHON_COMMAND - must be a path that works in cmd context for nmake
     if cmd /c 'where python >/dev/null 2>&1' 2>/dev/null; then
-      # python is in cmd PATH, use it
+      # python is in cmd PATH, leave PYTHON_COMMAND unset - Makefile will use 'python'
       :
     elif command -v py >/dev/null 2>&1; then
       # Use py launcher to get actual python.exe path since python is not in cmd PATH
       PYTHON_PATH=$(cmd /c 'py -3 -c "import sys; print(sys.executable)"' 2>/dev/null | tr -d '\r')
-      if [ -n "$PYTHON_PATH" ]; then
-        # PYTHON_COMMAND must be a Windows path for nmake
+      echo "DEBUG: py -3 returned '$PYTHON_PATH'"
+      if [ -n "$PYTHON_PATH" ] && [ "$PYTHON_PATH" != "python" ] && [ "$PYTHON_PATH" != "python3" ]; then
+        # PYTHON_COMMAND must be a full Windows path for nmake
         export PYTHON_COMMAND="$PYTHON_PATH"
         echo "Set PYTHON_COMMAND=$PYTHON_COMMAND for nmake compatibility"
       else
-        echo "Warning: Could not resolve python.exe via py launcher"
+        echo "Warning: py returned '$PYTHON_PATH' - not a full path, trying to find python.exe manually"
+        # Try to find python.exe in typical locations
+        PYTHON_FALLBACK=$(cmd /c 'where python 2^>nul' 2>/dev/null | tr -d '\r' | head -1)
+        if [ -n "$PYTHON_FALLBACK" ]; then
+          export PYTHON_COMMAND="$PYTHON_FALLBACK"
+          echo "Set PYTHON_COMMAND=$PYTHON_COMMAND (fallback)"
+        fi
       fi
     else
       echo "Warning: python not available - nmake may fail"
