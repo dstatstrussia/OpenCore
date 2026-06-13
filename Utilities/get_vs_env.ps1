@@ -17,8 +17,9 @@ if ([string]::IsNullOrEmpty($envLines)) {
   exit 1
 }
 
-# Write output
+# Write output with Unix line endings for bash parsing
 Set-Content -Path $outFile -Value $null -Encoding ascii
+$writer = [System.IO.StreamWriter]::new($outFile, $false, [System.Text.Encoding]::ASCII)
 
 $vsPaths = @()
 $includePaths = @()
@@ -49,25 +50,33 @@ if ($vsPaths) {
   $convertedPaths = ($vsPaths | ForEach-Object {
     ($_ -replace '\\','/') -replace '^([A-Za-z]):','/$1'
   }) -join ':'
-  "PATH=$convertedPaths" | Out-File -FilePath $outFile -Encoding ascii -Append
+  $writer.WriteLine("PATH=$convertedPaths")
 }
 
 # Keep INCLUDE/LIB as Windows paths (backslashes) for cl.exe
 if ($includePaths) {
   $convertedInclude = ($includePaths -join ';')
-  "INCLUDE=$convertedInclude" | Out-File -FilePath $outFile -Encoding ascii -Append
+  $writer.WriteLine("INCLUDE=$convertedInclude")
 }
 
 if ($libPaths) {
   $convertedLib = ($libPaths -join ';')
-  "LIB=$convertedLib" | Out-File -FilePath $outFile -Encoding ascii -Append
+  $writer.WriteLine("LIB=$convertedLib")
 }
+
 # Disable warnings as errors and C4311/C4312 for IA32 header compatibility in host tools
-"CL=/WX- /wd4311 /wd4312" | Out-File -FilePath $outFile -Encoding ascii -Append
+$clFlags = "/WX- /wd4311 /wd4312"
+if ($env:CL) {
+  $clFlags = "$clFlags $env:CL"
+}
+$writer.WriteLine("CL=$clFlags")
+
 # Also output the Windows Kit version for dynamic paths
 if (Test-Path "${env:ProgramFiles(x86)}\Windows Kits\10\Lib") {
   $kitVersions = Get-ChildItem "${env:ProgramFiles(x86)}\Windows Kits\10\Lib" -Directory | Sort-Object Name
   if ($kitVersions) {
-    "WINSDK_VERSION=$($kitVersions[-1].Name)" | Out-File -FilePath $outFile -Encoding ascii -Append
+    $writer.WriteLine("WINSDK_VERSION=$($kitVersions[-1].Name)")
   }
 }
+
+$writer.Close()
