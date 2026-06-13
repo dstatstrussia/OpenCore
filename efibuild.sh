@@ -166,9 +166,8 @@ if [ "$(unamer)" = "Windows" ]; then
       done
     fi
     # Set PYTHON_COMMAND - must be a path that works in cmd context for nmake
-    if cmd /c 'where python >/dev/null 2>&1' 2>/dev/null; then
-      # python is in cmd PATH, leave PYTHON_COMMAND unset - Makefile will use 'python'
-      :
+    if [ -n "$PYTHON_COMMAND" ]; then
+      echo "Using existing PYTHON_COMMAND: $PYTHON_COMMAND"
     elif command -v py >/dev/null 2>&1; then
       # Use py launcher to get the actual python.exe directory and construct full path
       PYTHON_DIR=$(cmd /c 'py -3 -c "import os, sys; print(os.path.dirname(sys.executable))"' 2>/dev/null | tr -d '\r')
