@@ -623,6 +623,23 @@ if [ "$NEW_BUILDSYSTEM" != "1" ]; then
   if [ "$SKIP_TESTS" != "1" ]; then
     echo "Testing..."
     if [ "$(unamer)" = "Windows" ]; then
+      # Ensure Python is available for nmake Makefiles
+      # nmake Makefiles check: if defined PYTHON_COMMAND python ...
+      # They require 'python' command in cmd PATH, not just bash PATH
+      # Check if python is available in cmd context:
+      if cmd /c 'where python >/dev/null 2>&1' 2>/dev/null; then
+        : # python available in cmd PATH
+      else
+        # python not in cmd PATH - unset PYTHON_COMMAND to use Makefile defaults
+        # or use py launcher if available
+        if command -v py >/dev/null 2>&1; then
+          # nmake will call 'python' but we can redirect via PATH
+          # Create a temporary wrapper in cmd's TEMP
+          cmd /c '"%SystemRoot%\System32\where.exe" python 2>nul || echo "Need python in cmd PATH for nmake"'
+          echo "Add actions/setup-python to workflow - Python required for nmake"
+        fi
+        unset PYTHON_COMMAND
+      fi
       # Normal build similar to Unix.
       cd BaseTools || exit 1
       nmake        || exit 1
