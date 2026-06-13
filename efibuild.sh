@@ -177,6 +177,7 @@ if [ "$(unamer)" = "Windows" ]; then
       # Use py launcher to get actual python.exe path since python is not in cmd PATH
       PYTHON_PATH=$(cmd /c 'py -3 -c "import sys; print(sys.executable)"' 2>/dev/null | tr -d '\r')
       if [ -n "$PYTHON_PATH" ]; then
+        # PYTHON_COMMAND must be a Windows path for nmake
         export PYTHON_COMMAND="$PYTHON_PATH"
         echo "Set PYTHON_COMMAND=$PYTHON_COMMAND for nmake compatibility"
       else
@@ -622,6 +623,7 @@ if [ "$NEW_BUILDSYSTEM" != "1" ]; then
   if [ "$SKIP_TESTS" != "1" ]; then
     echo "Testing..."
     if [ "$(unamer)" = "Windows" ]; then
+      echo "Running nmake for Windows (unamer=Windows)"
       cd BaseTools || exit 1
       nmake        || exit 1
       cd ..        || exit 1
