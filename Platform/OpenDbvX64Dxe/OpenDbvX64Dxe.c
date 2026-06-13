@@ -1,7 +1,7 @@
 /** @file
-   Copyright (C) 2026. All rights reserved.
+    Copyright (C) 2026. All rights reserved.
 
-   Dynamic Binary Translation DXE Driver for ARM64 to x86_64
+    Dynamic Binary Translation DXE Driver for ARM64 to x86_64
 **/
 
 #include <Uefi.h>
@@ -40,7 +40,6 @@ OcGetDbtBootEntries (
   UINTN                            EntryCount;
   OC_PICKER_ENTRY                  *NewEntries;
   BOOLEAN                          IsMacSoftwareUpdate = FALSE;
-  BOOLEAN                          IsDyldInstaller     = FALSE;
 
   ASSERT (PickerContext != NULL);
   ASSERT (Entries != NULL);
@@ -72,289 +71,115 @@ OcGetDbtBootEntries (
     return Status;
   }
 
-EntryCount = 0;
+  EntryCount = 0;
 
-   //
-   // Look for macOS Installer (com.apple.installer) in boot directories
-   //
-   DEBUG ((DEBUG_INFO, "DBT: Looking for traditional installer at %s\n", L"\\System\\Library\\CoreServices\\com.apple.installer"));
-   Status = RootDirectory->Open (
-                            RootDirectory,
-                            &BootDirectory,
-                            L"\\System\\Library\\CoreServices\\com.apple.installer",
-                            EFI_FILE_MODE_READ,
-                            0
-                            );
+  //
+  // Look for macOS Installer (com.apple.installer) in boot directories
+  //
+  DEBUG ((DEBUG_INFO, "DBT: Looking for traditional installer at %s\n", L"\\System\\Library\\CoreServices\\com.apple.installer"));
+  Status = RootDirectory->Open (
+                           RootDirectory,
+                           &BootDirectory,
+                           L"\\System\\Library\\CoreServices\\com.apple.installer",
+                           EFI_FILE_MODE_READ,
+                           0
+                           );
 
-   if (!EFI_ERROR (Status)) {
-     DEBUG ((DEBUG_INFO, "DBT: Found traditional installer directory\n"));
-     Status = EFI_NOT_FOUND;
+  if (!EFI_ERROR (Status)) {
+    DEBUG ((DEBUG_INFO, "DBT: Found traditional installer directory\n"));
+    Status = EFI_NOT_FOUND;
 
-     FileInfoSize = 0;
-     BootDirectory->GetInfo (BootDirectory, &gEfiFileInfoGuid, &FileInfoSize, NULL);
-     if (FileInfoSize > 0) {
-       Status = EFI_SUCCESS;
-       FileInfo = AllocatePool (FileInfoSize);
-       if (FileInfo != NULL) {
-         BootDirectory->GetInfo (BootDirectory, &gEfiFileInfoGuid, &FileInfoSize, FileInfo);
-         if ((FileInfo->Attribute & EFI_FILE_DIRECTORY) != 0) {
-           DEBUG ((DEBUG_INFO, "DBT: Traditional installer is a directory, EntryCount++\n"));
-           ++EntryCount;
-         } else {
-           DEBUG ((DEBUG_INFO, "DBT: Traditional installer is NOT a directory (attributes: 0x%x)\n", FileInfo->Attribute));
-         }
-         FreePool (FileInfo);
-       }
-     }
-     BootDirectory->Close (BootDirectory);
-   } else {
-     DEBUG ((DEBUG_INFO, "DBT: Traditional installer not found - %r\n", Status));
-   }
+    FileInfoSize = 0;
+    BootDirectory->GetInfo (BootDirectory, &gEfiFileInfoGuid, &FileInfoSize, NULL);
+    if (FileInfoSize > 0) {
+      Status = EFI_SUCCESS;
+      FileInfo = AllocatePool (FileInfoSize);
+      if (FileInfo != NULL) {
+        BootDirectory->GetInfo (BootDirectory, &gEfiFileInfoGuid, &FileInfoSize, FileInfo);
+        if ((FileInfo->Attribute & EFI_FILE_DIRECTORY) != 0) {
+          DEBUG ((DEBUG_INFO, "DBT: Traditional installer is a directory, EntryCount++\n"));
+          ++EntryCount;
+        } else {
+          DEBUG ((DEBUG_INFO, "DBT: Traditional installer is NOT a directory (attributes: 0x%x)\n", FileInfo->Attribute));
+        }
+        FreePool (FileInfo);
+      }
+    }
+    BootDirectory->Close (BootDirectory);
+  } else {
+    DEBUG ((DEBUG_INFO, "DBT: Traditional installer not found - %r\n", Status));
+  }
 
-   //
-   // Also look for macOS 27+ installer (com.apple.MobileAsset) in SharedSupport
-   //
-   if (EntryCount == 0) {
-     DEBUG ((DEBUG_INFO, "DBT: Looking for macOS 27+ MobileAsset installer at %s\n", L"\\SharedSupport\\com_apple_MobileAsset_MacSoftwareUpdate"));
-     Status = RootDirectory->Open (
-                              RootDirectory,
-                              &BootDirectory,
-                              L"\\SharedSupport\\com_apple_MobileAsset_MacSoftwareUpdate",
-                              EFI_FILE_MODE_READ,
-                              0
-                              );
+  //
+  // Also look for macOS 27+ installer (com.apple.MobileAsset) in SharedSupport
+  //
+  if (EntryCount == 0) {
+    DEBUG ((DEBUG_INFO, "DBT: Looking for macOS 27+ MobileAsset installer at %s\n", L"\\SharedSupport\\com_apple_MobileAsset_MacSoftwareUpdate"));
+    Status = RootDirectory->Open (
+                             RootDirectory,
+                             &BootDirectory,
+                             L"\\SharedSupport\\com_apple_MobileAsset_MacSoftwareUpdate",
+                             EFI_FILE_MODE_READ,
+                             0
+                             );
 
-     if (!EFI_ERROR (Status)) {
-       DEBUG ((DEBUG_INFO, "DBT: Found macOS 27+ MobileAsset installer directory, IsMacSoftwareUpdate = TRUE\n"));
-       Status = EFI_NOT_FOUND;
+    if (!EFI_ERROR (Status)) {
+      DEBUG ((DEBUG_INFO, "DBT: Found macOS 27+ MobileAsset installer directory, IsMacSoftwareUpdate = TRUE\n"));
+      Status = EFI_NOT_FOUND;
 
-       FileInfoSize = 0;
-       BootDirectory->GetInfo (BootDirectory, &gEfiFileInfoGuid, &FileInfoSize, NULL);
-       if (FileInfoSize > 0) {
-         Status = EFI_SUCCESS;
-         FileInfo = AllocatePool (FileInfoSize);
-         if (FileInfo != NULL) {
-           BootDirectory->GetInfo (BootDirectory, &gEfiFileInfoGuid, &FileInfoSize, FileInfo);
-           if ((FileInfo->Attribute & EFI_FILE_DIRECTORY) != 0) {
-             DEBUG ((DEBUG_INFO, "DBT: MobileAsset installer is a directory, EntryCount++, IsMacSoftwareUpdate=TRUE\n"));
-             ++EntryCount;
-             IsMacSoftwareUpdate = TRUE;
-           } else {
-             DEBUG ((DEBUG_INFO, "DBT: MobileAsset installer is NOT a directory (attributes: 0x%x)\n", FileInfo->Attribute));
-           }
-           FreePool (FileInfo);
-         }
-       }
-       BootDirectory->Close (BootDirectory);
-     } else {
-       DEBUG ((DEBUG_INFO, "DBT: macOS 27+ MobileAsset installer not found - %r\n", Status));
-     }
-   }
-
-   //
-   // Also look for macOS 27+ installer dyld cache path (x86_64 cache found in installer)
-   // This handles cases where installer has dyld shared cache at /System/Library/dyld
-   //
-   if (EntryCount == 0) {
-     DEBUG ((DEBUG_INFO, "DBT: Looking for macOS 27+ dyld cache installer at %s\n", L"\\System\\Library\\dyld"));
-     Status = RootDirectory->Open (
-                              RootDirectory,
-                              &BootDirectory,
-                              L"\\System\\Library\\dyld",
-                              EFI_FILE_MODE_READ,
-                              0
-                              );
-
-     if (!EFI_ERROR (Status)) {
-       DEBUG ((DEBUG_INFO, "DBT: Found macOS 27+ dyld cache directory, checking for x86_64 cache\n"));
-       Status = EFI_NOT_FOUND;
-
-       FileInfoSize = 0;
-       BootDirectory->GetInfo (BootDirectory, &gEfiFileInfoGuid, &FileInfoSize, NULL);
-       if (FileInfoSize > 0) {
-         Status = EFI_SUCCESS;
-         FileInfo = AllocatePool (FileInfoSize);
-         if (FileInfo != NULL) {
-           BootDirectory->GetInfo (BootDirectory, &gEfiFileInfoGuid, &FileInfoSize, FileInfo);
-           if ((FileInfo->Attribute & EFI_FILE_DIRECTORY) != 0) {
-             DEBUG ((DEBUG_INFO, "DBT: dyld cache is a directory, checking for x86_64 installer\n"));
-             // Check if this is an installer by looking for shared cache files
-             EFI_FILE_PROTOCOL *DylibDir;
-             EFI_FILE_INFO     *DylibFileInfo;
-             UINTN             DylibInfoSize = 0;
-             Status = BootDirectory->Open (
-                                        BootDirectory,
-                                        &DylibDir,
-                                        L"shared_cache.x86_64h",
-                                        EFI_FILE_MODE_READ,
-                                        0
-                                        );
-             if (EFI_ERROR (Status)) {
-               Status = BootDirectory->Open (
-                                            BootDirectory,
-                                            &DylibDir,
-                                            L"shared_cache.x86_64",
-                                            EFI_FILE_MODE_READ,
-                                            0
-                                            );
-             }
-             if (!EFI_ERROR (Status)) {
-               DEBUG ((DEBUG_INFO, "DBT: Found x86_64 dyld shared cache, EntryCount++, IsDylibInstaller=TRUE\n"));
-               ++EntryCount;
-               IsDyldInstaller = TRUE;
-             }
-             DylibDir->Close (DylibDir);
-           }
-           FreePool (FileInfo);
-         }
-       }
-       BootDirectory->Close (BootDirectory);
-     } else {
-       DEBUG ((DEBUG_INFO, "DBT: macOS 27+ dyld cache directory not found - %r\n", Status));
-     }
-   }
-         FreePool (FileInfo);
-       }
-     }
-     BootDirectory->Close (BootDirectory);
-   } else {
-     DEBUG ((DEBUG_INFO, "DBT: Traditional installer not found - %r\n", Status));
-   }
-
-   //
-   // Also look for macOS 27+ installer (com.apple.MobileAsset) in SharedSupport
-   //
-   if (EntryCount == 0) {
-     DEBUG ((DEBUG_INFO, "DBT: Looking for macOS 27+ MobileAsset installer at %s\n", L"\\SharedSupport\\com_apple_MobileAsset_MacSoftwareUpdate"));
-     Status = RootDirectory->Open (
-                              RootDirectory,
-                              &BootDirectory,
-                              L"\\SharedSupport\\com_apple_MobileAsset_MacSoftwareUpdate",
-                              EFI_FILE_MODE_READ,
-                              0
-                              );
-
-     if (!EFI_ERROR (Status)) {
-       DEBUG ((DEBUG_INFO, "DBT: Found macOS 27+ MobileAsset installer directory, IsMacSoftwareUpdate = TRUE\n"));
-       Status = EFI_NOT_FOUND;
-
-       FileInfoSize = 0;
-       BootDirectory->GetInfo (BootDirectory, &gEfiFileInfoGuid, &FileInfoSize, NULL);
-       if (FileInfoSize > 0) {
-         Status = EFI_SUCCESS;
-         FileInfo = AllocatePool (FileInfoSize);
-         if (FileInfo != NULL) {
-           BootDirectory->GetInfo (BootDirectory, &gEfiFileInfoGuid, &FileInfoSize, FileInfo);
-           if ((FileInfo->Attribute & EFI_FILE_DIRECTORY) != 0) {
-             DEBUG ((DEBUG_INFO, "DBT: MobileAsset installer is a directory, EntryCount++, IsMacSoftwareUpdate=TRUE\n"));
-             ++EntryCount;
-             IsMacSoftwareUpdate = TRUE;
-           } else {
-             DEBUG ((DEBUG_INFO, "DBT: MobileAsset installer is NOT a directory (attributes: 0x%x)\n", FileInfo->Attribute));
-           }
-           FreePool (FileInfo);
-         }
-       }
-       BootDirectory->Close (BootDirectory);
-     } else {
-       DEBUG ((DEBUG_INFO, "DBT: macOS 27+ MobileAsset installer not found - %r\n", Status));
-     }
-   }
-
-   //
-   // Also look for macOS 27+ installer dyld cache path (x86_64 cache found in installer)
-   // This handles cases where installer has dyld shared cache at /System/Library/dyld
-   //
-   if (EntryCount == 0) {
-     DEBUG ((DEBUG_INFO, "DBT: Looking for macOS 27+ dyld cache installer at %s\n", L"\\System\\Library\\dyld"));
-     Status = RootDirectory->Open (
-                              RootDirectory,
-                              &BootDirectory,
-                              L"\\System\\Library\\dyld",
-                              EFI_FILE_MODE_READ,
-                              0
-                              );
-
-     if (!EFI_ERROR (Status)) {
-       DEBUG ((DEBUG_INFO, "DBT: Found macOS 27+ dyld cache directory, checking for x86_64 cache\n"));
-       Status = EFI_NOT_FOUND;
-
-       FileInfoSize = 0;
-       BootDirectory->GetInfo (BootDirectory, &gEfiFileInfoGuid, &FileInfoSize, NULL);
-       if (FileInfoSize > 0) {
-         Status = EFI_SUCCESS;
-         FileInfo = AllocatePool (FileInfoSize);
-         if (FileInfo != NULL) {
-           BootDirectory->GetInfo (BootDirectory, &gEfiFileInfoGuid, &FileInfoSize, FileInfo);
-           if ((FileInfo->Attribute & EFI_FILE_DIRECTORY) != 0) {
-             DEBUG ((DEBUG_INFO, "DBT: dyld cache is a directory, checking for x86_64 installer\n"));
-             // Check if this is an installer by looking for shared cache files
-             EFI_FILE_PROTOCOL *DylibDir;
-             EFI_FILE_INFO     *DylibFileInfo;
-             UINTN             DylibInfoSize = 0;
-             Status = BootDirectory->Open (
-                                    BootDirectory,
-                                    &DylibDir,
-                                    L"shared_cache.x86_64h",
-                                    EFI_FILE_MODE_READ,
-                                    0
-                                    );
-             if (EFI_ERROR (Status)) {
-               Status = BootDirectory->Open (
-                                        BootDirectory,
-                                        &DylibDir,
-                                        L"shared_cache.x86_64",
-                                        EFI_FILE_MODE_READ,
-                                        0
-                                        );
-             }
-if (!EFI_ERROR (Status)) {
-                DEBUG ((DEBUG_INFO, "DBT: Found x86_64 dyld shared cache, EntryCount++, IsDyldInstaller=TRUE\n"));
-                ++EntryCount;
-                IsDyldInstaller = TRUE;
-              }
-              DylibDir->Close (DylibDir);
-           }
-           FreePool (FileInfo);
-         }
-       }
-       BootDirectory->Close (BootDirectory);
-     } else {
-       DEBUG ((DEBUG_INFO, "DBT: macOS 27+ dyld cache directory not found - %r\n", Status));
-     }
-   }
+      FileInfoSize = 0;
+      BootDirectory->GetInfo (BootDirectory, &gEfiFileInfoGuid, &FileInfoSize, NULL);
+      if (FileInfoSize > 0) {
+        Status = EFI_SUCCESS;
+        FileInfo = AllocatePool (FileInfoSize);
+        if (FileInfo != NULL) {
+          BootDirectory->GetInfo (BootDirectory, &gEfiFileInfoGuid, &FileInfoSize, FileInfo);
+          if ((FileInfo->Attribute & EFI_FILE_DIRECTORY) != 0) {
+            DEBUG ((DEBUG_INFO, "DBT: MobileAsset installer is a directory, EntryCount++, IsMacSoftwareUpdate=TRUE\n"));
+            ++EntryCount;
+            IsMacSoftwareUpdate = TRUE;
+          } else {
+            DEBUG ((DEBUG_INFO, "DBT: MobileAsset installer is NOT a directory (attributes: 0x%x)\n", FileInfo->Attribute));
+          }
+          FreePool (FileInfo);
+        }
+      }
+      BootDirectory->Close (BootDirectory);
+    } else {
+      DEBUG ((DEBUG_INFO, "DBT: macOS 27+ MobileAsset installer not found - %r\n", Status));
+    }
+  }
 
   DEBUG ((DEBUG_INFO, "DBT: Installer scan complete - EntryCount=%u, IsMacSoftwareUpdate=%d\n", EntryCount, IsMacSoftwareUpdate));
   RootDirectory->Close (RootDirectory);
 
-if (EntryCount > 0) {
-     DEBUG ((DEBUG_INFO, "DBT: Creating %u installer entry(s)\n", EntryCount));
-     NewEntries = AllocatePool (sizeof (OC_PICKER_ENTRY) * EntryCount);
-     if (NewEntries == NULL) {
-       return EFI_OUT_OF_RESOURCES;
-     }
+  if (EntryCount > 0) {
+    DEBUG ((DEBUG_INFO, "DBT: Creating %u installer entry(s)\n", EntryCount));
+    NewEntries = AllocatePool (sizeof (OC_PICKER_ENTRY) * EntryCount);
+    if (NewEntries == NULL) {
+      return EFI_OUT_OF_RESOURCES;
+    }
 
-     ZeroMem (NewEntries, sizeof (OC_PICKER_ENTRY) * EntryCount);
+    ZeroMem (NewEntries, sizeof (OC_PICKER_ENTRY) * EntryCount);
 
-     NewEntries[0].Id = AllocateCopyPool (AsciiStrSize ("macOS-Installer"), "macOS-Installer");
-     NewEntries[0].Name = AllocateCopyPool (AsciiStrSize ("macOS Installer (Translated)"), "macOS Installer (Translated)");
-     NewEntries[0].Flavour = AllocateCopyPool (AsciiStrSize ("OpenDbt"), "OpenDbt");
-     //
-     // For macOS 27+ MobileAsset installer, use alternate boot path
-     // For dyld installer, use traditional boot.efi path (found in CoreServices)
-     //
-     if (IsMacSoftwareUpdate) {
-       DEBUG ((DEBUG_INFO, "DBT: Using macOS 27+ MobileAsset boot path: %s\n", "\\SharedSupport\\boot.efi"));
-       NewEntries[0].Path = AllocateCopyPool (AsciiStrSize ("\\SharedSupport\\boot.efi"), "\\SharedSupport\\boot.efi");
-     } else {
-       DEBUG ((DEBUG_INFO, "DBT: Using traditional installer boot path: %s\n", "\\System\\Library\\CoreServices\\boot.efi"));
-       NewEntries[0].Path = AllocateCopyPool (AsciiStrSize ("\\System\\Library\\CoreServices\\boot.efi"), "\\System\\Library\\CoreServices\\boot.efi");
-     }
+    NewEntries[0].Id = AllocateCopyPool (AsciiStrSize ("macOS-Installer"), "macOS-Installer");
+    NewEntries[0].Name = AllocateCopyPool (AsciiStrSize ("macOS Installer (Translated)"), "macOS Installer (Translated)");
+    NewEntries[0].Flavour = AllocateCopyPool (AsciiStrSize ("OpenDbt"), "OpenDbt");
+    //
+    // For macOS 27+ MobileAsset installer, use alternate boot path
+    //
+    if (IsMacSoftwareUpdate) {
+      DEBUG ((DEBUG_INFO, "DBT: Using macOS 27+ MobileAsset boot path: %s\n", "\\SharedSupport\\boot.efi"));
+      NewEntries[0].Path = AllocateCopyPool (AsciiStrSize ("\\SharedSupport\\boot.efi"), "\\SharedSupport\\boot.efi");
+    } else {
+      DEBUG ((DEBUG_INFO, "DBT: Using traditional installer boot path: %s\n", "\\System\\Library\\CoreServices\\boot.efi"));
+      NewEntries[0].Path = AllocateCopyPool (AsciiStrSize ("\\System\\Library\\CoreServices\\boot.efi"), "\\System\\Library\\CoreServices\\boot.efi");
+    }
 
-     *Entries    = NewEntries;
-     *NumEntries = EntryCount;
-     return EFI_SUCCESS;
-   }
+    *Entries    = NewEntries;
+    *NumEntries = EntryCount;
+    return EFI_SUCCESS;
+  }
 
   DEBUG ((DEBUG_INFO, "DBT: No installer found, returning EFI_NOT_FOUND\n"));
   return EFI_NOT_FOUND;
