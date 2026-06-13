@@ -147,11 +147,39 @@ echo "Building on $(unamer)"
 
 if [ "$(unamer)" = "Windows" ]; then
    cmd <<< 'chcp 437'
-   export PYTHON_COMMAND="python"
-   # Ensure setuptools is installed for Python 3.12+
-   if ! python -c "import setuptools._distutils" 2>/dev/null; then
-     echo "Installing setuptools for Python 3.12 compatibility..."
-     python -m pip install setuptools --quiet --force-reinstall
+   # Find Python - try python, python3, py, or check common install paths
+   PYTHON_CMD=""
+   if command -v python >/dev/null 2>&1; then
+     PYTHON_CMD="python"
+   elif command -v python3 >/dev/null 2>&1; then
+     PYTHON_CMD="python3"
+   elif command -v py >/dev/null 2>&1; then
+     PYTHON_CMD="py"
+   elif [ -f "/c/Python312/python.exe" ]; then
+     export PATH="/c/Python312:${PATH}"
+     PYTHON_CMD="python"
+   elif [ -f "/c/Python311/python.exe" ]; then
+     export PATH="/c/Python311:${PATH}"
+     PYTHON_CMD="python"
+   elif [ -f "/c/Program Files/Python312/python.exe" ]; then
+     export PATH="/c/Program Files/Python312:${PATH}"
+     PYTHON_CMD="python"
+elif [ -d "/c/hostedtoolcache/windows/Python" ]; then
+      # GitHub Actions hosted toolcache
+      # shellcheck disable=SC2012
+      PYTHON_ROOT=$(ls -1 "/c/hostedtoolcache/windows/Python" 2>/dev/null | head -1)
+      if [ -n "$PYTHON_ROOT" ] && [ -f "/c/hostedtoolcache/windows/Python/${PYTHON_ROOT}/x64/python.exe" ]; then
+        export PATH="/c/hostedtoolcache/windows/Python/${PYTHON_ROOT}/x64:${PATH}"
+        PYTHON_CMD="python"
+      fi
+    fi
+   if [ -n "$PYTHON_CMD" ]; then
+     export PYTHON_COMMAND="$PYTHON_CMD"
+     # Ensure setuptools is installed for Python 3.12+
+     if ! $PYTHON_CMD -c "import setuptools._distutils" 2>/dev/null; then
+       echo "Installing setuptools for Python 3.12 compatibility..."
+       $PYTHON_CMD -m pip install setuptools --quiet --force-reinstall 2>/dev/null || true
+     fi
    fi
  fi
 
