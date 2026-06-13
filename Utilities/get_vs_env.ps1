@@ -26,14 +26,15 @@ foreach ($line in $envLines) {
 # Convert PATH to Git Bash format with proper quoting for spaces
 if ($vsPaths) {
   $convertedPaths = ($vsPaths | ForEach-Object {
-    $p = ($_ -replace '\\','/') -replace '^([A-Za-z]):','/$1'
-    $p = '/{0}{1}' -f $p.Substring(1,1).ToLower(), $p.Substring(2)
+    $p = ($_ -replace '\\','/')
+    # Convert C:\ to /c/
+    $p = $p -replace '^([A-Za-z]):/',{'/{0}' -f $p.Substring(0,1).ToLower()}
     if ($p.Contains(' ')) { "'$p'" } else { $p }
   }) -join ':'
   $writer.WriteLine("PATH=$convertedPaths")
 }
 
-# CL prepend flags for MSVC
+# CL prepend flags for MSVC - quote to prevent word splitting
 $writer.WriteLine("CL='/WX- /wd4311 /wd4312 /wd4267 /wd4244'")
 
 # Windows Kit version
