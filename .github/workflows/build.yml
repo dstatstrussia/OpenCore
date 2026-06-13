@@ -157,9 +157,6 @@ jobs:
     env:
       HAS_OPENSSL_BUILD: 0
       CC: gcc
-    defaults:
-      run:
-        shell: bash
     steps:
        - uses: actions/checkout@v6
        - uses: actions/setup-python@v6
@@ -168,10 +165,11 @@ jobs:
        - uses: TheMrMilchmann/setup-msvc-dev@v4
          with:
            arch: x86
-       - name: Verify Python PATH
+       - name: Verify Python in cmd
+         shell: cmd
          run: |
-           echo "Python in PATH: $(which python 2>/dev/null || echo 'NOT FOUND')"
-           echo "PATH: $PATH"
+           where python
+           echo PYTHON in PATH should be found above
        - name: Install Dependencies
          shell: cmd
          run: |
