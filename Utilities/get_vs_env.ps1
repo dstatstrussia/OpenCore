@@ -25,8 +25,9 @@ $includePaths = @()
 $libPaths = @()
 
 foreach ($line in $envLines) {
-  if ($line -match '^([A-Z]+)=(.*)$') {
-    $k = $matches[1]
+  # Case-insensitive match for environment variables
+  if ($line -match '^([A-Za-z]+)=(.*)$') {
+    $k = $matches[1].ToUpper()
     $v = $matches[2].Trim()
     switch ($k) {
       'PATH' {
@@ -63,8 +64,8 @@ if ($libPaths) {
   $writer.WriteLine("LIB=$convertedLib")
 }
 
-# Disable warnings as errors and C4311/C4312 for IA32 header compatibility in host tools
-$writer.WriteLine("CL=/WX- /wd4311 /wd4312")
+# Disable warnings as errors and C4311/C4312/C4267 for IA32 header compatibility in host tools
+$writer.WriteLine("CL=/WX- /wd4311 /wd4312 /wd4267")
 
 # Also output the Windows Kit version for dynamic paths
 if (Test-Path "${env:ProgramFiles(x86)}\Windows Kits\10\Lib") {
