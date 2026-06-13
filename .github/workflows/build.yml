@@ -165,6 +165,9 @@ jobs:
       - uses: TheMrMilchmann/setup-msvc-dev@v4
         with:
           arch: x86
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.x'
       - name: Install Dependencies
         run: |
           choco install make nasm zip iasl --no-progress
