@@ -166,7 +166,14 @@ if [ "$(unamer)" = "Windows" ]; then
       done
     fi
     # Set PYTHON_COMMAND - must be a path that works in cmd context for nmake
-    if [ -n "$pythonLocation" ]; then
+    if [ -n "$PYTHON_COMMAND" ]; then
+      # Validate that PYTHON_COMMAND is a real Windows path (contains drive letter)
+      if [[ "$PYTHON_COMMAND" != *":"* ]] || [[ "$PYTHON_COMMAND" == "python" ]] || [[ "$PYTHON_COMMAND" == "python3" ]]; then
+        echo "PYTHON_COMMAND '$PYTHON_COMMAND' is invalid, finding proper path..."
+        PYTHON_COMMAND=""
+      fi
+    fi
+    if [ -z "$PYTHON_COMMAND" ] && [ -n "$pythonLocation" ]; then
       # setup-python provides pythonLocation - construct the python.exe path for nmake
       export PYTHON_COMMAND="$pythonLocation\\python.exe"
       echo "Set PYTHON_COMMAND=$PYTHON_COMMAND from setup-python"

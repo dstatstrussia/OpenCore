@@ -179,7 +179,7 @@ jobs:
        - name: CI Bootstrap
          shell: bash
          env:
-           pythonLocation: ${{ steps.python.outputs.python-location }}
+           PYTHON_COMMAND: ${{ steps.python.outputs.python-path }}
          run: |
            echo "=== Python detection ==="
            echo "PYTHON_COMMAND from setup-python: $PYTHON_COMMAND"
