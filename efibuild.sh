@@ -582,23 +582,29 @@ WINSDK_PATH_FOR_RC_EXE="${WINSDK_PATH_FOR_RC_EXE/\\c\\/C:\\}"
       if [ -n "$VS2022_BUILDTOOLS" ] && [ -f "${ROOTDIR}/Utilities/get_vs_env.ps1" ]; then
         powershell -NoProfile -File "${ROOTDIR}/Utilities/get_vs_env.ps1" -vsPath "$VS2022_BUILDTOOLS" -outFile "$ps_env_file" 2>/dev/null || true
       fi
-      if [ -s "$ps_env_file" ]; then
-        while IFS= read -r line; do
-          [ -z "$line" ] && continue
-          var="${line%%=*}"
-          val="${line#*=}"
-          if [ -n "$var" ]; then
-            if [ "$var" = "PATH" ]; then
-              export PATH="${val}:${PATH}"
-            elif [ "$var" = "CL" ] && [ -n "$CL" ]; then
-              export CL="${CL} ${val}"
-            else
-              printf -v "$var" '%s' "$val"
-              # shellcheck disable=SC2163
-              export "${var?}"
-            fi
-          fi
-        done < "$ps_env_file"
+if [ -s "$ps_env_file" ]; then
+         while IFS= read -r line; do
+           # Strip carriage returns from PowerShell output (Windows line endings)
+           line="$(printf '%s' "$line" | tr -d '\r')"
+           [ -z "$line" ] && continue
+           var="${line%%=*}"
+           val="${line#*=}"
+           if [ -n "$var" ]; then
+             if [ "$var" = "PATH" ]; then
+               export PATH="${val}:${PATH}"
+             elif [ "$var" = "CL" ]; then
+               if [ -n "$CL" ]; then
+                 export CL="${CL} ${val}"
+               else
+                 export CL="${val}"
+               fi
+             else
+               printf -v "$var" '%s' "$val"
+               # shellcheck disable=SC2163
+               export "${var?}"
+             fi
+           fi
+         done < "$ps_env_file"
         rm -f "$ps_env_file"
       else
         # Fallback: use VS2022_PREFIX directly if PowerShell failed
@@ -628,16 +634,18 @@ WINSDK_PATH_FOR_RC_EXE="${WINSDK_PATH_FOR_RC_EXE/\\c\\/C:\\}"
 if [ "$NEW_BUILDSYSTEM" != "1" ]; then
    if [ "$SKIP_TESTS" != "1" ]; then
 echo "Testing..."
-      if [ "$(unamer)" = "Windows" ]; then
-        echo "Running nmake for Windows (unamer=Windows)"
-        cd BaseTools || exit 1
-        # Ensure MSVC tools take precedence over Git Bash /usr/bin tools for nmake
-        # VS2022_PREFIX is already set - construct bin path and prepend to PATH
-        MSVC_BIN=$(echo "${VS2022_PREFIX}/bin/Hostx64/x64" | sed 's|\\|/|g' | sed 's|^C:|^/c|' | sed 's|^D:|^/d|')
-        if [ -n "$MSVC_BIN" ]; then
-          export PATH="${MSVC_BIN}:${PATH}"
-        fi
-        nmake        || exit 1
+if [ "$(unamer)" = "Windows" ]; then
+         echo "Running nmake for Windows (unamer=Windows)"
+         cd BaseTools || exit 1
+         # Ensure MSVC tools take precedence over Git Bash /usr/bin tools for nmake
+         # VS2022_PREFIX is already set - construct bin path and prepend to PATH
+         # VS2022_PREFIX has format C:\...\\ so strip trailing backslash and convert
+         MSVC_BIN=$(echo "${VS2022_PREFIX}" | sed 's|\\\+$||' | sed 's|\\|/|g' | sed 's|^C:|^/c|' | sed 's|^D:|^/d|')
+         MSVC_BIN="${MSVC_BIN}/bin/Hostx64/x64"
+         if [ -n "$MSVC_BIN" ]; then
+           export PATH="${MSVC_BIN}:${PATH}"
+         fi
+         nmake        || exit 1
         cd ..        || exit 1
       else
       make -C BaseTools -j || exit 1
