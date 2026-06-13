@@ -151,13 +151,14 @@ if [ "$(unamer)" = "Windows" ]; then
     # GitHub Actions installs Python in hostedtoolcache, may need explicit setup
     PYTHON_FOUND=0
     # Try to find Python via registry or common paths
-    if command -v python >/dev/null 2>&1; then
+    # Note: command -v python works in bash but not in cmd, need to check cmd too
+    if cmd /c 'where python >/dev/null 2>&1' 2>/dev/null; then
       PYTHON_FOUND=1
-      echo "Found python at: $(which python)"
-      if ! python -c "import setuptools._distutils" 2>/dev/null; then
-        echo "Installing setuptools for Python 3.12 compatibility..."
-        python -m pip install setuptools --quiet --force-reinstall 2>/dev/null || true
-      fi
+      echo "Found python in cmd PATH at: $(cmd /c 'where python' 2>/dev/null | tr -d '\r')"
+    elif command -v python >/dev/null 2>&1; then
+      # Python found in bash but not cmd - this is GitHub Actions behavior
+      PYTHON_FOUND=1
+      echo "Found python at: $(which python) (bash only, will resolve for cmd)"
     elif [ -d "/c/ProgramData/chocolatey/lib/python3" ]; then
       for PYBIN in /c/ProgramData/chocolatey/lib/python3*/tools/python.exe; do
         if [ -f "$PYBIN" ]; then
@@ -168,7 +169,22 @@ if [ "$(unamer)" = "Windows" ]; then
         fi
       done
     fi
-    export PYTHON_COMMAND="${PYTHON_COMMAND:-python}"
+    # Set PYTHON_COMMAND - must be a path that works in cmd context for nmake
+    if cmd /c 'where python >/dev/null 2>&1' 2>/dev/null; then
+      # python is in cmd PATH, use it
+      :
+    elif command -v py >/dev/null 2>&1; then
+      # Use py launcher to get actual python.exe path since python is not in cmd PATH
+      PYTHON_PATH=$(cmd /c 'py -3 -c "import sys; print(sys.executable)"' 2>/dev/null | tr -d '\r')
+      if [ -n "$PYTHON_PATH" ]; then
+        export PYTHON_COMMAND="$PYTHON_PATH"
+        echo "Set PYTHON_COMMAND=$PYTHON_COMMAND for nmake compatibility"
+      else
+        echo "Warning: Could not resolve python.exe via py launcher"
+      fi
+    else
+      echo "Warning: python not available - nmake may fail"
+    fi
   fi
 
 if [ "${SELFPKG}" = "" ]; then
@@ -606,28 +622,6 @@ if [ "$NEW_BUILDSYSTEM" != "1" ]; then
   if [ "$SKIP_TESTS" != "1" ]; then
     echo "Testing..."
     if [ "$(unamer)" = "Windows" ]; then
-      # Ensure Python is available for nmake Makefiles
-      # nmake Makefiles check: if defined PYTHON_COMMAND python ...
-      # They require 'python' command in cmd PATH, not just bash PATH
-      # Check if python is available in cmd context:
-      if cmd /c 'where python >/dev/null 2>&1' 2>/dev/null; then
-        : # python available in cmd PATH
-      else
-        # python not in cmd PATH - let the Makefile fall back to py launcher detection
-        # or use py to find python.exe path
-        if command -v py >/dev/null 2>&1; then
-          PYTHON_PATH=$(cmd /c 'py -3 -c "import sys; print(sys.executable)"' 2>/dev/null | tr -d '\r')
-          if [ -n "$PYTHON_PATH" ]; then
-            export PYTHON_COMMAND="$PYTHON_PATH"
-            echo "Set PYTHON_COMMAND=$PYTHON_COMMAND via py launcher"
-          else
-            echo "Warning: Could not resolve python.exe via py launcher"
-          fi
-        else
-          echo "Warning: python/py not found - BaseTools nmake may fail without Python in PATH"
-        fi
-      fi
-      # Normal build similar to Unix.
       cd BaseTools || exit 1
       nmake        || exit 1
       cd ..        || exit 1
