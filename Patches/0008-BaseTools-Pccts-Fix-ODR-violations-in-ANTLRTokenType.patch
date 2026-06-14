@@ -1,0 +1,98 @@
+diff --git a/BaseTools/Source/C/VfrCompile/Pccts/h/pcctscfg.h b/BaseTools/Source/C/VfrCompile/Pccts/h/pcctscfg.h
+index 0c3c5ba..e40b3a8 100644
+--- a/BaseTools/Source/C/VfrCompile/Pccts/h/pcctscfg.h
++++ b/BaseTools/Source/C/VfrCompile/Pccts/h/pcctscfg.h
+@@ -307,6 +307,9 @@ void special_fopen_actions(char * s)
+ # define  ZZMAXSTK (ZZSTACK_MAX_MODE * 2)
+ #endif
+ 
++/* Define ANTLRTokenType for ODR compliance when not declared by generated code */
++typedef int ANTLRTokenType;
++
+ #ifndef DllExportPCCTS
+ #define DllExportPCCTS
+ #endif
+diff --git a/BaseTools/Source/C/VfrCompile/Pccts/h/AParser.cpp b/BaseTools/Source/C/VfrCompile/Pccts/h/AParser.cpp
+index 10b06d2..6fbbeca 100644
+--- a/BaseTools/Source/C/VfrCompile/Pccts/h/AParser.cpp
++++ b/BaseTools/Source/C/VfrCompile/Pccts/h/AParser.cpp
+@@ -36,17 +36,11 @@
+ 
+ PCCTS_NAMESPACE_STD
+ 
+-/* I have to put this here due to C++ limitation
+- * that you can't have a 'forward' decl for enums.
+- * I hate C++!!!!!!!!!!!!!!!
+- * Of course, if I could use real templates, this would go away.
+- */
+-// MR1
+-// MR1  10-Apr-97  133MR1  Prevent use of varying sizes for the
+-// MR1  			ANTLRTokenType enum
++/* MR1  10-Apr-97  133MR1  Prevent use of varying sizes for the
++// MR1		  		ANTLRTokenType enum
+ // MR1
+ 
+-enum ANTLRTokenType { TER_HATES_CPP=0, ITS_TOO_COMPLICATED=9999};	    // MR1
++// Note: ANTLRTokenType is now typedef'd in pcctscfg.h for ODR compliance
++ */
+ 
+ #define ANTLR_SUPPORT_CODE
+ 
+diff --git a/BaseTools/Source/C/VfrCompile/Pccts/h/BufFileInput.cpp b/BaseTools/Source/C/VfrCompile/Pccts/h/BufFileInput.cpp
+index 99d08a4..829143a 100644
+--- a/BaseTools/Source/C/VfrCompile/Pccts/h/BufFileInput.cpp
++++ b/BaseTools/Source/C/VfrCompile/Pccts/h/BufFileInput.cpp
+@@ -11,9 +11,8 @@
+ //
+ //   28-May-1998    Add virtual destructor to release buffer.
+ //
+-//                  Add dummy definition for ANTLRTokenType
+-//                  to allow compilation without knowing
+-//                  token type codes.
++//                  Remove redundant ANTLRTokenType enum definition.
++//                  ANTLRTokenType is now typedef'd in pcctscfg.h for ODR compliance.
+ //
+ //                  Manfred Kogler (km@cast.uni-linz.ac.at)
+ //                  (1.33MR14)
+@@ -21,8 +20,6 @@
+ //   20-Jul-1998    MR14a - Reorder initialization list for ctor.
+ //
+ 
+-enum ANTLRTokenType {TER_HATES_CPP=0, SO_DO_OTHERS=9999 };
+-
+ #include "pcctscfg.h"
+ #include "pccts_assert.h"
+ #include "pccts_string.h"
+diff --git a/BaseTools/Source/C/VfrCompile/Pccts/h/DLexerBase.cpp b/BaseTools/Source/C/VfrCompile/Pccts/h/DLexerBase.cpp
+index d7a3723..c9527e2 100644
+--- a/BaseTools/Source/C/VfrCompile/Pccts/h/DLexerBase.cpp
++++ b/BaseTools/Source/C/VfrCompile/Pccts/h/DLexerBase.cpp
+@@ -34,22 +34,14 @@
+ 
+ PCCTS_NAMESPACE_STD
+ 
+-/* I have to put this here due to C++ limitation
+- * that you can't have a 'forward' decl for enums.
+- * I hate C++!!!!!!!!!!!!!!!
+- */
+-
+-// MR1
+-// MR1  10-Apr-97  133MR1  Prevent use of varying sizes for the
+-// MR1  			ANTLRTokenType enum
++/* MR1  10-Apr-97  133MR1  Prevent use of varying sizes for the
++// MR1		  			ANTLRTokenType enum
+ // MR1
+ 
+-enum ANTLRTokenType { TER_HATES_CPP=0, ITS_UTTER_GARBAGE,		// MR1
+-					 WITH_SOME_GOOD_IDEAS=9999};	// MR1
++// Note: ANTLRTokenType is now typedef'd in pcctscfg.h for ODR compliance
++ */
+ 
+ #define ANTLR_SUPPORT_CODE
+ 
+-#include "pcctscfg.h"
+ #include DLEXERBASE_H
+ #include APARSER_H		// MR23
+ 
+-- 
+2.45.2
