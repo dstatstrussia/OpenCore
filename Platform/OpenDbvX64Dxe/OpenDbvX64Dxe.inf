@@ -43,6 +43,8 @@
   UefiDriverEntryPoint
   OcBootManagementLib
   OcDbtLib
+  OcAppleKernelLib
+  OcMachoLib
 
 [Protocols]
   gEfiSimpleFileSystemProtocolGuid
