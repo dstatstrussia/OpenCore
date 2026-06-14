@@ -16,9 +16,8 @@
 #define OC_CPU_LIB_H
 
 #include <Uefi.h>
-#include <IndustryStandard/CpuId.h>
-#include <IndustryStandard/AppleIntelCpuInfo.h>
-#include <Protocol/FrameworkMpService.h>
+#include <Intel/IndustryStandard/Cpuid.h>
+#include <Apple/IndustryStandard/AppleIntelCpuInfo.h>
 #include <Protocol/MpService.h>
 
 /**
