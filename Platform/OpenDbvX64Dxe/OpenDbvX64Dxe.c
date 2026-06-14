@@ -23,6 +23,8 @@
 #include <Library/OcBootManagementLib.h>
 #include <Library/OcAppleKernelLib.h>
 #include <Library/OcMachoLib.h>
+#include <Library/OcMemoryLib.h>
+#include <Library/OcDeviceTreeLib.h>
 
 #include <Protocol/OcBootEntry.h>
 #include <Protocol/SimpleFileSystem.h>
