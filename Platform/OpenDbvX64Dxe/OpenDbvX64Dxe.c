@@ -18,8 +18,62 @@
 #include <Library/OcBootManagementLib.h>
 
 #include <Protocol/OcBootEntry.h>
+#include <Protocol/SimpleFileSystem.h>
 
 STATIC DBT_CONTEXT  *gDbtContext = NULL;
+STATIC EFI_HANDLE   gInstallerDevice = NULL;
+
+STATIC
+BOOLEAN
+IsGoldenGateInstaller (
+  IN  EFI_FILE_PROTOCOL  *RootDirectory
+  )
+{
+  EFI_STATUS  Status;
+  EFI_FILE_PROTOCOL  *File;
+  CHAR16  *MarkerPath = L"\\.IAPhysicalMedia";
+
+  Status = RootDirectory->Open (
+                          RootDirectory,
+                          &File,
+                          MarkerPath,
+                          EFI_FILE_MODE_READ,
+                          0
+                          );
+
+  if (!EFI_ERROR (Status)) {
+    File->Close (File);
+    return TRUE;
+  }
+
+  return FALSE;
+}
+
+STATIC
+BOOLEAN
+IsSharedSupportVolume (
+  IN  EFI_FILE_PROTOCOL  *RootDirectory
+  )
+{
+  EFI_STATUS  Status;
+  EFI_FILE_PROTOCOL  *Dir;
+  CHAR16  *Path = L"\\com_apple_MobileAsset_MacSoftwareUpdate";
+
+  Status = RootDirectory->Open (
+                          RootDirectory,
+                          &Dir,
+                          Path,
+                          EFI_FILE_MODE_READ,
+                          0
+                          );
+
+  if (!EFI_ERROR (Status)) {
+    Dir->Close (Dir);
+    return TRUE;
+  }
+
+  return FALSE;
+}
 
 STATIC
 EFI_STATUS
@@ -208,6 +262,67 @@ OcGetDbtBootEntries (
   }
 
   DEBUG ((DEBUG_INFO, "DBT: Installer scan complete - EntryCount=%u, IsMacSoftwareUpdate=%d\n", EntryCount, IsMacSoftwareUpdate));
+
+  if (EntryCount == 0) {
+    //
+    // macOS 27 Golden Gate: Check for .IAPhysicalMedia marker
+    // This indicates an installer volume that needs separate SharedSupport volume
+    //
+    if (IsGoldenGateInstaller (RootDirectory)) {
+      DEBUG ((DEBUG_INFO, "DBT: Found .IAPhysicalMedia marker - macOS 27 Golden Gate installer detected\n"));
+      DEBUG ((DEBUG_INFO, "DBT: Checking for mounted SharedSupport volume...\n"));
+
+      // Store the installer device handle for later lookup
+      gInstallerDevice = Device;
+
+// Look for any mounted SharedSupport volume in the system
+      EFI_HANDLE  *HandleBuffer;
+      UINTN       HandleCount;
+      EFI_SIMPLE_FILE_SYSTEM_PROTOCOL  *FsProtocol;
+      EFI_FILE_PROTOCOL                *SharedRoot;
+
+      Status = gBS->LocateHandleBuffer (
+                      ByProtocol,
+                      &gEfiSimpleFileSystemProtocolGuid,
+                      NULL,
+                      &HandleCount,
+                      &HandleBuffer
+                      );
+
+      if (!EFI_ERROR (Status) && HandleCount > 0) {
+        for (UINTN Idx = 0; Idx < HandleCount; Idx++) {
+          if (HandleBuffer[Idx] == Device) {
+            continue; // Skip the installer volume itself
+          }
+
+          Status = gBS->HandleProtocol (
+                       HandleBuffer[Idx],
+                       &gEfiSimpleFileSystemProtocolGuid,
+                       (VOID **)&FsProtocol
+                       );
+
+          if (!EFI_ERROR (Status)) {
+            Status = FsProtocol->OpenVolume (FsProtocol, &SharedRoot);
+            if (!EFI_ERROR (Status)) {
+              if (IsSharedSupportVolume (SharedRoot)) {
+                DEBUG ((DEBUG_INFO, "DBT: Found mounted SharedSupport volume for Golden Gate installer\n"));
+                EntryCount = 1;
+                IsMacSoftwareUpdate = TRUE;
+                SharedRoot->Close (SharedRoot);
+                break;
+              }
+              SharedRoot->Close (SharedRoot);
+            }
+          }
+        }
+      }
+
+      if (HandleBuffer != NULL) {
+        FreePool (HandleBuffer);
+      }
+    }
+  }
+
   RootDirectory->Close (RootDirectory);
 
   if (EntryCount > 0) {
