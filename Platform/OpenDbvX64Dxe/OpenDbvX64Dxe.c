@@ -6,6 +6,7 @@
 
 #include <Uefi.h>
 #include <Guid/FileInfo.h>
+#include <Guid/AppleApfsInfo.h>
 #include <Library/BaseLib.h>
 #include <Library/BaseMemoryLib.h>
 #include <Library/DebugLib.h>
@@ -60,18 +61,66 @@ IsSharedSupportVolume (
   CHAR16  *Path = L"\\com_apple_MobileAsset_MacSoftwareUpdate";
 
   Status = RootDirectory->Open (
-                          RootDirectory,
-                          &Dir,
-                          Path,
-                          EFI_FILE_MODE_READ,
-                          0
-                          );
+                           RootDirectory,
+                           &Dir,
+                           Path,
+                           EFI_FILE_MODE_READ,
+                           0
+                           );
 
   if (!EFI_ERROR (Status)) {
     Dir->Close (Dir);
     return TRUE;
   }
 
+  return FALSE;
+}
+
+STATIC
+BOOLEAN
+IsPrebootVolume (
+  IN  EFI_HANDLE  Device
+  )
+{
+  EFI_STATUS                      Status;
+  EFI_SIMPLE_FILE_SYSTEM_PROTOCOL *FileSystem;
+  EFI_FILE_PROTOCOL               *RootDirectory;
+  APPLE_APFS_VOLUME_INFO          *VolumeInfo;
+
+  Status = gBS->HandleProtocol (
+                  Device,
+                  &gEfiSimpleFileSystemProtocolGuid,
+                  (VOID **)&FileSystem
+                  );
+  if (EFI_ERROR (Status)) {
+    return FALSE;
+  }
+
+  Status = FileSystem->OpenVolume (FileSystem, &RootDirectory);
+  if (EFI_ERROR (Status)) {
+    return FALSE;
+  }
+
+  VolumeInfo = OcGetFileInfo (
+                  RootDirectory,
+                  &gAppleApfsVolumeInfoGuid,
+                  sizeof (*VolumeInfo),
+                  NULL
+                  );
+
+  RootDirectory->Close (RootDirectory);
+
+  if (VolumeInfo == NULL) {
+    return FALSE;
+  }
+
+  if ((VolumeInfo->Role & APPLE_APFS_VOLUME_ROLE_PREBOOT) != 0) {
+    DEBUG ((DEBUG_INFO, "DBT: Device is APFS Preboot volume\n"));
+    FreePool (VolumeInfo);
+    return TRUE;
+  }
+
+  FreePool (VolumeInfo);
   return FALSE;
 }
 
@@ -89,10 +138,15 @@ OcGetDbtBootEntries (
   EFI_SIMPLE_FILE_SYSTEM_PROTOCOL  *FileSystem;
   EFI_FILE_PROTOCOL                *RootDirectory;
   EFI_FILE_PROTOCOL                *BootDirectory;
+  EFI_FILE_PROTOCOL                *FileIterator;
   EFI_FILE_INFO                    *FileInfo;
   UINTN                            FileInfoSize;
   UINTN                            EntryCount;
   OC_PICKER_ENTRY                  *NewEntries;
+  UINTN                            BufferSize;
+  EFI_STATUS                       TmpStatus;
+  CHAR16                           *SubPath;
+  UINTN                            SubPathSize;
   BOOLEAN                          IsMacSoftwareUpdate = FALSE;
 
   ASSERT (PickerContext != NULL);
@@ -240,19 +294,19 @@ OcGetDbtBootEntries (
                                      );
             if (EFI_ERROR (Status)) {
               Status = BootDirectory->Open (
-                                       BootDirectory,
-                                       &DylibDir,
-                                       L"shared_cache.x86_64",
-                                       EFI_FILE_MODE_READ,
-                                       0
-                                       );
+                                         BootDirectory,
+                                         &DylibDir,
+                                         L"shared_cache.x86_64",
+                                         EFI_FILE_MODE_READ,
+                                         0
+                                         );
             }
             if (!EFI_ERROR (Status)) {
               DEBUG ((DEBUG_INFO, "DBT: Found x86_64 dyld shared cache, EntryCount++\n"));
               ++EntryCount;
               // Still use traditional boot.efi path for dyld installer
+              DylibDir->Close (DylibDir);
             }
-            DylibDir->Close (DylibDir);
           }
           FreePool (FileInfo);
         }
