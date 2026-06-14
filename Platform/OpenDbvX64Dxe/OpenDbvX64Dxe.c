@@ -1,8 +1,8 @@
 /** @file
-     Copyright (C) 2026. All rights reserved.
+      Copyright (C) 2026. All rights reserved.
 
-     Dynamic Binary Translation DXE Driver for ARM64 to x86_64
-  **/
+      Dynamic Binary Translation DXE Driver for ARM64 to x86_64
+   **/
 
 #include <Uefi.h>
 #include <Guid/FileInfo.h>
@@ -26,6 +26,11 @@
 
 #include <Protocol/OcBootEntry.h>
 #include <Protocol/SimpleFileSystem.h>
+
+//
+// ARM64 thread state flavor for Mach-O LC_UNIXTHREAD
+//
+#define ARM64_THREAD_STATE_FLAVOR  6
 
 STATIC DBT_CONTEXT  *gDbtContext = NULL;
 STATIC EFI_HANDLE   gInstallerDevice = NULL;
@@ -94,10 +99,10 @@ IsPrebootVolume (
   APPLE_APFS_VOLUME_INFO          *VolumeInfo;
 
   Status = gBS->HandleProtocol (
-                  Device,
-                  &gEfiSimpleFileSystemProtocolGuid,
-                  (VOID **)&FileSystem
-                  );
+                   Device,
+                   &gEfiSimpleFileSystemProtocolGuid,
+                   (VOID **)&FileSystem
+                   );
   if (EFI_ERROR (Status)) {
     return FALSE;
   }
@@ -108,11 +113,11 @@ IsPrebootVolume (
   }
 
   VolumeInfo = OcGetFileInfo (
-                  RootDirectory,
-                  &gAppleApfsVolumeInfoGuid,
-                  sizeof (*VolumeInfo),
-                  NULL
-                  );
+                   RootDirectory,
+                   &gAppleApfsVolumeInfoGuid,
+                   sizeof (*VolumeInfo),
+                   NULL
+                   );
 
   RootDirectory->Close (RootDirectory);
 
@@ -183,6 +188,60 @@ IsArm64Kernel (
   return FALSE;
 }
 
+//
+// Minimal device tree structure for XNU handoff
+//
+#pragma pack(push, 1)
+typedef struct {
+  UINT32  NumProperties;
+  UINT32  NumChildren;
+} DT_NODE;
+
+typedef struct {
+  CHAR8   Name[32];
+  UINT32  Length;
+} DT_PROP;
+#pragma pack(pop)
+
+STATIC
+EFI_STATUS
+CreateMinimalDeviceTree (
+  OUT UINT8   **DeviceTree,
+  OUT UINTN   *DeviceTreeSize
+  )
+{
+  //
+  // Simple flattened device tree with /chosen node containing boot-args
+  // Will be allocated and populated at runtime
+  //
+  UINTN  Size = EFI_PAGE_SIZE;
+  EFI_STATUS  Status;
+  
+  Status = gBS->AllocatePool (EfiBootServicesData, Size, (VOID **)DeviceTree);
+  if (EFI_ERROR (Status)) {
+    return Status;
+  }
+  
+  ZeroMem (*DeviceTree, Size);
+  *DeviceTreeSize = Size;
+  
+  //
+  // Create minimal /chosen node
+  // Format: DT_NODE { NumProperties, NumChildren } [0,0 ends]
+  // followed by properties
+  //
+  DT_NODE  *Root = (DT_NODE *)*DeviceTree;
+  Root->NumProperties = 1;
+  Root->NumChildren = 0;
+  
+  DT_PROP  *Prop = (DT_PROP *)((UINTN)Root + sizeof (DT_NODE));
+  AsciiStrCpyS (Prop->Name, 32, "boot-args");
+  Prop->Length = 2;  // "1"
+  *((CHAR8 *)((UINTN)Prop + sizeof (DT_PROP))) = '1';
+  
+  return EFI_SUCCESS;
+}
+
 STATIC
 EFI_STATUS
 DirectLoadKernel (
@@ -204,18 +263,37 @@ DirectLoadKernel (
   BootArgs2                       *BootArgs;
   UINTN                            BootArgsSize;
   BOOLEAN                          IsArm64;
+  UINT8                            *StackBuffer;
+  UINTN                            StackSize;
+  UINT8                            *DeviceTreeBuffer;
+  UINTN                            DeviceTreeSize;
+  UINTN                            Index;
+  MACH_LOAD_COMMAND                *Cmd;
+  MACH_HEADER_64                    *Header64;
 
   Status = gBS->HandleProtocol (
-                  Device,
-                  &gEfiSimpleFileSystemProtocolGuid,
-                  (VOID **)&FileSystem
-                  );
+                   Device,
+                   &gEfiSimpleFileSystemProtocolGuid,
+                   (VOID **)&FileSystem
+                   );
   if (EFI_ERROR (Status)) {
     return Status;
   }
 
   Status = FileSystem->OpenVolume (FileSystem, &RootDirectory);
   if (EFI_ERROR (Status)) {
+    return Status;
+  }
+
+  Status = RootDirectory->Open (
+                          RootDirectory,
+                          &KernelFile,
+                          KernelPath,
+                          EFI_FILE_MODE_READ,
+                          0
+                          );
+  if (EFI_ERROR (Status)) {
+    RootDirectory->Close (RootDirectory);
     return Status;
   }
 
@@ -276,22 +354,36 @@ DirectLoadKernel (
   } else {
     //
     // For ARM64 kernels, extract entry point from thread state
-    // ARM64 thread state (arm_thread_state64_t) has PC at offset 0x108
+    // arm_thread_state64_t: x0-x28 (29) + fp + sp + pc + cpsr = 32 UINT64 values
+    // Flavor(4) + Count(4) + 32*8 = PC at offset 0x108 (index 31 in UINT64 array after flavor/count)
     //
-    MACH_HEADER_64  *Header64 = (MACH_HEADER_64 *)KernelBuffer;
-    MACH_LOAD_COMMAND  *Cmd;
-    UINTN  Index;
-    UINTN  TopOfCommands;
-
+    Header64 = (MACH_HEADER_64 *)KernelBuffer;
     EntryPoint = 0;
-    TopOfCommands = (UINTN)&Header64->Commands[0] + Header64->CommandsSize;
 
     for (Index = 0; Index < Header64->NumCommands; ++Index) {
       Cmd = &Header64->Commands[Index];
       if (Cmd->CommandType == MACH_LOAD_COMMAND_UNIX_THREAD) {
-        UINT64  *ThreadState = (UINT64 *)((UINTN)Cmd + sizeof (MACH_THREAD_COMMAND));
-        if ((UINTN)&ThreadState[6] <= TopOfCommands) {
-          EntryPoint = ThreadState[6];
+        UINT32   Flavor;
+        UINT32   Count;
+        UINT64   *ThreadState;
+
+        ThreadState = (UINT64 *)((UINTN)Cmd + sizeof (MACH_THREAD_COMMAND));
+
+        // Verify we have flavor and count
+        if ((UINTN)&ThreadState[2] > (UINTN)KernelBuffer + KernelSize) {
+          break;
+        }
+        Flavor = *((UINT32 *)ThreadState);
+        Count = *((UINT32 *)((UINTN)ThreadState + 4));
+
+        // Skip flavor and count to get to actual thread state values
+        ThreadState = (UINT64 *)((UINTN)ThreadState + 8);
+
+        // ARM64_THREAD_STATE: flavor=6, PC at index 31 (after x0-x28, fp, sp)
+        if (Flavor == ARM64_THREAD_STATE_FLAVOR && Count >= 32) {
+          if ((UINTN)&ThreadState[31] <= (UINTN)KernelBuffer + KernelSize) {
+            EntryPoint = ThreadState[31];
+          }
         }
         break;
       }
@@ -322,8 +414,33 @@ DirectLoadKernel (
   BootArgs->kaddr = (UINT64)(UINTN)KernelBuffer;
   BootArgs->ksize  = KernelSize;
 
-  BootArgs->deviceTreeP = 0;
-  BootArgs->deviceTreeLength = 0;
+  //
+  // Create minimal device tree for XNU
+  //
+  Status = CreateMinimalDeviceTree (&DeviceTreeBuffer, &DeviceTreeSize);
+  if (EFI_ERROR (Status)) {
+    DEBUG ((DEBUG_WARN, "DirectKernel: Failed to create device tree - %r\n", Status));
+    DeviceTreeBuffer = NULL;
+    DeviceTreeSize = 0;
+  } else {
+    BootArgs->deviceTreeP = (UINT64)(UINTN)DeviceTreeBuffer;
+    BootArgs->deviceTreeLength = (UINT32)DeviceTreeSize;
+  }
+
+  //
+  // Allocate stack for kernel execution
+  //
+  StackSize = EFI_PAGES_TO_SIZE (0x100);  // 1MB stack
+  Status = gBS->AllocatePool (EfiBootServicesData, StackSize, (VOID **)&StackBuffer);
+  if (EFI_ERROR (Status)) {
+    DEBUG ((DEBUG_ERROR, "DirectKernel: Failed to allocate stack - %r\n", Status));
+    if (DeviceTreeBuffer != NULL) {
+      FreePool (DeviceTreeBuffer);
+    }
+    FreePool (BootArgs);
+    FreePool (KernelBuffer);
+    return EFI_OUT_OF_RESOURCES;
+  }
 
   //
   // For ARM64 kernel, use DBT translation
@@ -333,14 +450,19 @@ DirectLoadKernel (
 
     ZeroMem (&ArmContext, sizeof (ArmContext));
     ArmContext.X0 = (UINT64)(UINTN)BootArgs;  // First argument: boot_args
-    ArmContext.SP = 0;                       // Stack pointer (must be set up)
+    ArmContext.SP = (UINT64)(UINTN)(StackBuffer + StackSize);  // Stack grows down
     ArmContext.PC = EntryPoint;              // Entry point (already virtual address)
 
     DEBUG ((DEBUG_INFO, "DirectKernel: Executing ARM64 kernel via DBT\n"));
+    DEBUG ((DEBUG_INFO, "DirectKernel: SP=0x%llx, PC=0x%llx\n", ArmContext.SP, ArmContext.PC));
 
     Status = DbtTranslateBlock (gDbtContext, KernelBuffer, KernelSize, NULL);
     if (EFI_ERROR (Status)) {
       DEBUG ((DEBUG_ERROR, "DirectKernel: DBT translation failed - %r\n", Status));
+      FreePool (StackBuffer);
+      if (DeviceTreeBuffer != NULL) {
+        FreePool (DeviceTreeBuffer);
+      }
       FreePool (BootArgs);
       FreePool (KernelBuffer);
       return Status;
@@ -349,6 +471,10 @@ DirectLoadKernel (
     DbtExecute (gDbtContext, &ArmContext);
 
     // Should not reach here
+    FreePool (StackBuffer);
+    if (DeviceTreeBuffer != NULL) {
+      FreePool (DeviceTreeBuffer);
+    }
     FreePool (BootArgs);
     FreePool (KernelBuffer);
     return EFI_DEVICE_ERROR;
@@ -357,10 +483,18 @@ DirectLoadKernel (
     // x86_64 kernel - directly call entry point
     //
     DEBUG ((DEBUG_INFO, "DirectKernel: x86_64 kernel execution not fully implemented\n"));
+    FreePool (StackBuffer);
+    if (DeviceTreeBuffer != NULL) {
+      FreePool (DeviceTreeBuffer);
+    }
     FreePool (BootArgs);
     FreePool (KernelBuffer);
     return EFI_UNSUPPORTED;
   } else {
+    FreePool (StackBuffer);
+    if (DeviceTreeBuffer != NULL) {
+      FreePool (DeviceTreeBuffer);
+    }
     FreePool (BootArgs);
     FreePool (KernelBuffer);
     return EFI_UNSUPPORTED;
@@ -381,15 +515,11 @@ OcGetDbtBootEntries (
   EFI_SIMPLE_FILE_SYSTEM_PROTOCOL  *FileSystem;
   EFI_FILE_PROTOCOL                *RootDirectory;
   EFI_FILE_PROTOCOL                *BootDirectory;
-  EFI_FILE_PROTOCOL                *FileIterator;
   EFI_FILE_INFO                    *FileInfo;
   UINTN                            FileInfoSize;
   UINTN                            EntryCount;
   OC_PICKER_ENTRY                  *NewEntries;
-  UINTN                            BufferSize;
-  EFI_STATUS                       TmpStatus;
-  CHAR16                           *SubPath;
-  UINTN                            SubPathSize;
+  UINTN                            Index;
   BOOLEAN                          IsMacSoftwareUpdate = FALSE;
 
   ASSERT (PickerContext != NULL);
@@ -564,7 +694,7 @@ OcGetDbtBootEntries (
       NULL
     };
 
-    for (UINTN Index = 0; KernelPaths[Index] != NULL; Index++) {
+    for (Index = 0; KernelPaths[Index] != NULL; Index++) {
       DEBUG ((DEBUG_INFO, "DBT: Looking for DirectKernel at %s\n", KernelPaths[Index]));
       Status = RootDirectory->Open (
                               RootDirectory,
@@ -615,12 +745,12 @@ OcGetDbtBootEntries (
       EFI_FILE_PROTOCOL                *SharedRoot;
 
       Status = gBS->LocateHandleBuffer (
-                      ByProtocol,
-                      &gEfiSimpleFileSystemProtocolGuid,
-                      NULL,
-                      &HandleCount,
-                      &HandleBuffer
-                      );
+                       ByProtocol,
+                       &gEfiSimpleFileSystemProtocolGuid,
+                       NULL,
+                       &HandleCount,
+                       &HandleBuffer
+                       );
 
       if (!EFI_ERROR (Status) && HandleCount > 0) {
         for (UINTN Idx = 0; Idx < HandleCount; Idx++) {
