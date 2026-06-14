@@ -32,8 +32,15 @@
 #include <Library/UefiLib.h>
 #include <Library/UefiRuntimeServicesTableLib.h>
 
+STATIC
+EFI_STATUS
+InternalAddBootEntryFromIAPhysicalMedia (
+  IN OUT OC_BOOT_CONTEXT  *BootContext,
+  IN OUT OC_BOOT_FILESYSTEM  *FileSystem
+  );
+
 /*
-  Expands DevicePath from short-form to full-form.
+   Expands DevicePath from short-form to full-form.
   The only valid expansions are full Device Paths refering to a file or a
   volume root. Latter type may be used with custom policies to determine a
   bootable file.
