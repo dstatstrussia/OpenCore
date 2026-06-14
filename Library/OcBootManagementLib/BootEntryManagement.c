@@ -2242,6 +2242,11 @@ OcScanForBootEntries (
     // Record predefined recoveries.
     //
     AddBootEntryFromSelfRecovery (BootContext, FileSystem);
+
+    //
+    // Try IA physical media marker for macOS 27 installer detection.
+    //
+    InternalAddBootEntryFromIAPhysicalMedia (BootContext, FileSystem);
   }
 
   if (CustomFileSystem != NULL) {
