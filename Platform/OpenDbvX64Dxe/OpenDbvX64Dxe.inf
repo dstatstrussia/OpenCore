@@ -37,6 +37,7 @@
   DebugLib
   DevicePathLib
   MemoryAllocationLib
+  OcMemoryLib
   PrintLib
   UefiLib
   UefiBootServicesTableLib
@@ -45,6 +46,7 @@
   OcDbtLib
   OcAppleKernelLib
   OcMachoLib
+  OcDeviceTreeLib
 
 [Protocols]
   gEfiSimpleFileSystemProtocolGuid
