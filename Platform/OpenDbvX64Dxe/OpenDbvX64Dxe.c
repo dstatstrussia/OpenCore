@@ -1370,6 +1370,20 @@ SKIP_READ_APPLE_KERNEL:
         }
       }
     }
+
+    //
+    // Data patches are unreliable on this platform (the __DATA_CONST
+    // window maps onto memory holes that return 0 and drop writes), but
+    // __TEXT_EXEC code patches work (NOP at 0xC51858C fixed the kvtophys
+    // path).  In the per-CPU walk (0xBD53DA4), force the found-index path:
+    // 'cbz w9' at 0xBD53DCC -> 'b 0xBD53E20' so w10 = 0 and the slot base
+    // becomes x8 = [0x7EB5578] (0 -> identity reads fault to 0, timer bit
+    // index 0, atomic LDSET writes bit 0 of 0xCA61D08, return old = 0 so
+    // the 'already busy' test passes).
+    //
+    if (KernelSize > 0x4D4FDCC + 4) {
+      *(volatile UINT32 *)((UINTN)KernelBuffer + 0x4D4FDCC) = 0x14000014;  // b 0xBD53E20 (was cbz w9)
+    }
     if (Hdr->Signature != MACH_HEADER_64_SIGNATURE) {
       DEBUG ((DEBUG_ERROR, "DirectKernel: Invalid Mach-O 64 magic %08X\n", Hdr->Signature));
       FreePool (KernelBuffer);
