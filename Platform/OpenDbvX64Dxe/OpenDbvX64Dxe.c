@@ -1375,14 +1375,19 @@ SKIP_READ_APPLE_KERNEL:
     // Data patches are unreliable on this platform (the __DATA_CONST
     // window maps onto memory holes that return 0 and drop writes), but
     // __TEXT_EXEC code patches work (NOP at 0xC51858C fixed the kvtophys
-    // path).  In the per-CPU walk (0xBD53DA4), force the found-index path:
-    // 'cbz w9' at 0xBD53DCC -> 'b 0xBD53E20' so w10 = 0 and the slot base
-    // becomes x8 = [0x7EB5578] (0 -> identity reads fault to 0, timer bit
-    // index 0, atomic LDSET writes bit 0 of 0xCA61D08, return old = 0 so
-    // the 'already busy' test passes).
+    // path).  In the per-CPU walk (0xBD53DA4) force a deterministic
+    // found/not-found path that never forms garbage addresses:
+    //   - 0xBD53DC0 'ldur x8,[x9,#0x1c]' -> 'add x8,x9,#4' so the slot
+    //     base is the in-image address 0x7EB5560 (x9 = 0x7EB555C)
+    //   - 0xBD53DCC 'cbz w9' -> 'b 0xBD53E18' so w10 = -1 (deterministic)
+    // Then: x10 = 0x7EB54D8 (in image), timer bit index reads 0, LDSET
+    // returns old 0 (0xCA61D08 file value 0) and the busy test passes.
     //
+    if (KernelSize > 0x4D4FDC0 + 4) {
+      *(volatile UINT32 *)((UINTN)KernelBuffer + 0x4D4FDC0) = 0x91000528;  // add x8, x9, #4 (was ldur x8,[x9,#0x1c])
+    }
     if (KernelSize > 0x4D4FDCC + 4) {
-      *(volatile UINT32 *)((UINTN)KernelBuffer + 0x4D4FDCC) = 0x14000014;  // b 0xBD53E20 (was cbz w9)
+      *(volatile UINT32 *)((UINTN)KernelBuffer + 0x4D4FDCC) = 0x14000012;  // b 0xBD53E18 (was cbz w9)
     }
     if (Hdr->Signature != MACH_HEADER_64_SIGNATURE) {
       DEBUG ((DEBUG_ERROR, "DirectKernel: Invalid Mach-O 64 magic %08X\n", Hdr->Signature));
