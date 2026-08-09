@@ -158,6 +158,17 @@ STATIC UINT32       gDbtRunSteps = 0;   // executions since last adaptation
 STATIC UINT32       gDbtRunLines = 0;   // lines emitted since last adaptation
 
 //
+// Repeat-PC watchdog (never gated): if the same block executes over and over
+// (a cached busy-wait with no fresh translates — exactly what the boot log
+// showed right before the hard freeze at pc=0xBBF0084), a DBT_STALL line is
+// emitted at each 1/4-million-repetition mark so the frozen loop is visible
+// in the capture instead of ending the boot in total silence.
+//
+#define DBT_STALL_GRANULE   (1ULL << 18)   // log once per 262k repeats
+STATIC UINT64       gDbtStallPc    = ~0ULL;
+STATIC UINT64       gDbtStallCnt   = 0;
+
+//
 // Fresh-block marker.  The driver calls DbtTranslateBlock (which registers
 // the block in the translation cache) before DbtExecute, so the cache alone
 // cannot distinguish first from later executions: DbtTranslateBlock records
@@ -2453,6 +2464,20 @@ STATIC UINTN DbtTranslateOne (
       // MRS has bit 21 set (11010101011), MSR has it clear (11010101000).
       BOOLEAN IsMsr = !((Inst >> 21) & 1);
 
+      // Hints live in MSR space with Op0 == 0 (WFI 0xD50320FF, WFE 0xD50320BF,
+      // SEV 0xD503209F, YIELD/CSDB/... ).  A single-vCPU guest without a
+      // timer shoe-horned through the translator must never actually sleep:
+      // NOP them so the trace keeps stepping instead of a silent stall.
+      if (IsMsr && (((Inst >> 19) & 0x3) == 0)) {
+        STATIC BOOLEAN DbtHintLogged = FALSE;
+        if (!DbtHintLogged) {
+          DbtHintLogged = TRUE;
+          DBG((DEBUG_INFO, "DBT_SYS: hint-enc op %08x -> NOP (WFI/WFE/SEV)\n", Inst));
+        }
+        EmitNop(&P);
+        return (UINTN)(P - X86Buf);
+      }
+
       // Extract op0/op1/CRn/CRm/op2
       UINT32  Op0   = (Inst >> 19) & 0x3;
       UINT32  Op1   = (Inst >> 16) & 0x7;
@@ -3576,6 +3601,26 @@ STATIC VOID DbtDumpState (IN CONST CHAR8 *Tag, IN DBT_ARM64_STATE *S) {
 #endif
 
 VOID DbtTraceBlock (VOID) {
+  //
+  // Repeat-PC watchdog (never gated, runs before all trace gates): catches
+  // the cached busy-wait that ends the boot in silence.  Same pc -> bump the
+  // repetition counter and log every DBT_STALL_GRANULE repeats; a changed pc
+  // resets the counter.
+  //
+  if (gDbtActiveState != NULL) {
+    if (gDbtTracePc == gDbtStallPc) {
+      gDbtStallCnt++;
+      if ((gDbtStallCnt & (DBT_STALL_GRANULE - 1)) == 0) {
+        DBG((DEBUG_INFO, "DBT_STAL: pc=0x%llx cnt=%llu sp=0x%llx lr=0x%llx\n",
+             gDbtTracePc, gDbtStallCnt,
+             gDbtActiveState->SP, gDbtActiveState->X[30]));
+      }
+    } else {
+      gDbtStallPc  = gDbtTracePc;
+      gDbtStallCnt = 0;
+    }
+  }
+
   //
   // Verbose runtime trace (never gated by the first-execution gate): sample
   // every executed block — cached loop bodies included.  The divisor adapts
