@@ -46,6 +46,9 @@ typedef struct {
   UINT64 CNTV_CVAL_EL0;
   UINT64 ACTLR_EL1;
   UINT64 CPACR_EL1;
+  UINT64 TPIDR_EL1;    // Per-CPU data base (thread pointer, EL1)
+  UINT64 TPIDR_EL0;
+  UINT64 TPIDRRO_EL0;
   //
   // NEON/SIMD register file (Q0-Q31, 128 bits each)
   //

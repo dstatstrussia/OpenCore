@@ -881,6 +881,12 @@ Inst = *(UINT32 *)(Seg + J + 8);
           // virtual MPIDR reported by the DBT).
           //
           *(UINT32 *)(CpuDataHost + 0x1C8) = 0;
+          //
+          // CPU number at +0x1B8: the kernel indexes a per-CPU slot table
+          // with it (`ldr w, [cpu_data,#0x1b8]; add x8,x8,x,w,uxt#4`), so it
+          // must be 0 for the single emulated CPU to hit slot 0.
+          //
+          *(UINT32 *)(CpuDataHost + 0x1B8) = 0;
 
           //
           // Stacks: the kernel does 'mov sp, cpu_data[+0x18]' (intstack) and
@@ -1702,12 +1708,56 @@ SKIP_READ_APPLE_KERNEL:
     }
 
     //
+    // Host-backed window for the kernel's static per-CPU slot table region.
+    // The image carries a __DATA global pointing into low physical space
+    // (observed base 0x10000005ABDE40, 16KB stride per CPU) that boot code
+    // atomically pokes via cpu_number<<14 offsets.  With no backing the DBT
+    // identity-maps it onto a host address that does not exist and the
+    // LDADD dies on the first counter increment (log ended exactly at such
+    // an access, PC 0xFFFFFE000C361B54).  Back it with a zeroed buffer.
+    //
+    {
+      UINT64 CpuSlotWinBase = 0x10000005ABD000ULL;  // page-aligned below 0x...5ABDE40
+      UINTN  CpuSlotWinSize = EFI_PAGES_TO_SIZE (128);  // 512KB staging
+      UINT8 *CpuSlotWinBuffer;
+      Status = gBS->AllocatePages (
+                      AllocateAnyPages,
+                      EfiLoaderData,
+                      EFI_SIZE_TO_PAGES (CpuSlotWinSize),
+                      (EFI_PHYSICAL_ADDRESS *)&CpuSlotWinBuffer
+                      );
+      if (!EFI_ERROR (Status)) {
+        ZeroMem (CpuSlotWinBuffer, CpuSlotWinSize);
+        DEBUG ((DEBUG_INFO, "DirectKernel: cpu slot window allocated host=%p base=0x%llx sz=0x%x\n",
+                CpuSlotWinBuffer, CpuSlotWinBase, CpuSlotWinSize));
+
+        if (EFI_ERROR (DbtSetPhysWindow (gDbtContext, CpuSlotWinBase, CpuSlotWinSize, CpuSlotWinBuffer))) {
+          DEBUG ((DEBUG_ERROR, "DirectKernel: cpu slot window set failed\n"));
+          gBS->FreePages ((EFI_PHYSICAL_ADDRESS)(UINTN)CpuSlotWinBuffer,
+                          EFI_SIZE_TO_PAGES (CpuSlotWinSize));
+        }
+      } else {
+        DEBUG ((DEBUG_WARN, "DirectKernel: cpu slot window alloc failed - %r\n", Status));
+      }
+    }
+
+    //
     // Populate the per-CPU data entries handoff table that xnu's boot code
     // scans (iBoot would normally fill it); without this the kernel reads
     // stale file data and faults dereferencing it.
     //
-    SetupCpuDataEntries (KernelBuffer, SegCount, SegVmAddr, SegVmSize,
-                         SegFileOff, EntryPoint, StackBuffer, StackSize);
+    if (SetupCpuDataEntries (KernelBuffer, SegCount, SegVmAddr, SegVmSize,
+                             SegFileOff, EntryPoint, StackBuffer, StackSize) != NULL) {
+      //
+      // TPIDR_EL1 is the kernel's per-CPU pointer (it reads cpu_number at
+      // [tpidr_el1,#0x1b8] to index its per-CPU slot array).  Point it at the
+      // fake cpu_data we planted inside __TEXT_BOOT_EXEC so the slot-array
+      // base is the static value the image carries, not 0 (which previously
+      // sent the dereference into the low phys window).
+      //
+      ArmContext.TPIDR_EL1 = (UINT64)EntryPoint + 0x77B;
+      DEBUG ((DEBUG_INFO, "DirectKernel: TPIDR_EL1 -> cpu_data va=0x%llx\n", ArmContext.TPIDR_EL1));
+    }
 
     DEBUG ((DEBUG_INFO, "DirectKernel: dispatch start pc=0x%llx maxsteps=%u\n",
             ArmContext.PC, MaxSteps));
