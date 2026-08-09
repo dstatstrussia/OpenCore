@@ -80,6 +80,8 @@ STATIC UINT64 gDbtKputcCount = 0;  // chars printed through the hook
 STATIC UINT64 gDbtSpyX0 = 0;       // arg of the ml_static_ptovirt spy hook
 VOID DbtStrlenGuard (VOID);
 VOID DbtSpyC518580 (VOID);
+VOID DbtProbeDivIn (VOID);
+VOID DbtProbeCsel (VOID);
 
 //
 // Guard for the kernel's NEON strlen loop (0xBB79720): if the string
@@ -2108,6 +2110,17 @@ STATIC UINTN DbtTranslateOne (
 
         CopyMem (P, Seq, (UINTN)(Q - Seq));
         P += (UINTN)(Q - Seq);
+
+        //
+        // One-shot freeze probe for the %u digit-loop block: log the CSEL
+        // outcome (the address the next ldrb will hit) and the host stack.
+        // If probe A fired but this one never does, the hang sits in the
+        // MSUB / extended-CMP / MOVK / CSEL sequence above.
+        //
+        if (InstAddr == 0xFFFFFE000BBF02D4ull) {
+          EmitMovImm(&P, (UINT64)(UINTN)DbtProbeCsel);
+          EmitByte(&P, 0xFF); EmitByte(&P, 0xD0);               // CALL RAX
+        }
         return (UINTN)(P - X86Buf);
       } else {
         DBG_ASM((DEBUG_INFO, "DBT_ASM:    CSEL family op2=%u -> NOP\n", Op2));
@@ -2164,6 +2177,17 @@ STATIC UINTN DbtTranslateOne (
                  IsSdiv ? "SDIV" : "UDIV", IsW ? "W" : "X", Rd,
                  IsW ? "W" : "X", RnU, IsW ? "W" : "X", RmU));
 
+        //
+        // One-shot freeze probe for the %u digit-loop block: log the
+        // division operands and the host stack before the DIV runs.
+        // Emitted before the operand loads because the call clobbers
+        // RAX/RCX.  The host-side gate keeps it one-shot.
+        //
+        if (!IsSdiv && InstAddr == 0xFFFFFE000BBF02B8ull) {
+          EmitMovImm(&P, (UINT64)(UINTN)DbtProbeDivIn);
+          EmitByte(&P, 0xFF); EmitByte(&P, 0xD0);               // CALL RAX
+        }
+
         if (RnU == 31) { EmitMovImm(&P, 0); } else { EmitLoadRax(&P, ArmRegXOff(RnU)); }
         if (IsW) EmitTrunc32(&P);
         if (RmU == 31) { EmitMovImm(&P, 0); } else { EmitLoadRcx(&P, ArmRegXOff(RmU)); }
@@ -2182,8 +2206,14 @@ STATIC UINTN DbtTranslateOne (
           if (IsW) { EmitByte(&P, 0x33); EmitByte(&P, 0xD2); } // XOR EDX, EDX
           else     { EmitRexW(&P); EmitByte(&P, 0x31); EmitByte(&P, 0xD2); }  // XOR RDX, RDX
         }
-        if (IsW) { EmitByte(&P, 0xF7); EmitByte(&P, 0xF1); }   // DIV/IDIV ECX
-        else     { EmitRexW(&P); EmitByte(&P, 0xF7); EmitByte(&P, 0xF9); }    // DIV/IDIV RCX
+        // DIV r/m = F7 /6 (unsigned), IDIV r/m = F7 /7 (signed).
+        // 32-bit:   DIV ECX = F7 F1, IDIV ECX = F7 F9.
+        // 64-bit:   DIV RCX = 48 F7 F1, IDIV RCX = 48 F7 F9.
+        // (UDIV must use DIV, SDIV must use IDIV — the 64-bit UDIV case
+        // used to emit IDIV RCX, so %u conversion of values with bit 63 set
+        // produced a signed, wrong quotient and the digit loop diverged.)
+        if (IsW) { EmitByte(&P, 0xF7); EmitByte(&P, IsSdiv ? 0xF9 : 0xF1); }
+        else     { EmitRexW(&P); EmitByte(&P, 0xF7); EmitByte(&P, IsSdiv ? 0xF9 : 0xF1); }
 
         if (Rd != 31) EmitStoreRax(&P, ArmRegXOff(Rd));
         EmitNop(&P);
@@ -3519,6 +3549,52 @@ VOID DbtKernelPutc (VOID) {
 
   DEBUG ((DEBUG_INFO, "DBT_KPUT: '%c' (0x%02x)\n",
           (C >= 0x20 && C < 0x7F) ? (UINTN)C : (UINTN)'.', C));
+}
+
+//
+// One-shot probes emitted into the translated %u digit-loop block
+// (0xBBF02A0) to locate the first-pass freeze.  Probe A fires right before
+// the UDIV, probe B right after the CSEL.  If A fires but B never does,
+// the hang sits between the division and the csel; if neither fires, it is
+// before the division.  The host stack address (the probe's own frame,
+// called from the translated code on the host stack) is included to test
+// the guest-stack (0xA42EAA78, identity-mapped) vs host-stack collision
+// theory.  One-shot: each fires only on its first execution, so the digit
+// loop cannot flood the log.
+//
+STATIC BOOLEAN gDbtProbeDivInFired = FALSE;
+STATIC BOOLEAN gDbtProbeCselFired = FALSE;
+
+VOID DbtProbeDivIn (VOID) {
+  if (gDbtProbeDivInFired) {
+    return;
+  }
+  gDbtProbeDivInFired = TRUE;
+
+  DBT_ARM64_STATE *S = gDbtActiveState;
+  if (S == NULL) {
+    return;
+  }
+  DEBUG ((DEBUG_INFO,
+    "DBT_PROBE: DIVIN x9=0x%llx x8=0x%llx x28=0x%llx w12=0x%llx sp=0x%llx hostsp=0x%llx\n",
+    S->X[9], S->X[8], S->X[28], S->X[12] & 0xFFFFFFFF, S->SP,
+    (UINT64)(UINTN)__builtin_frame_address (0)));
+}
+
+VOID DbtProbeCsel (VOID) {
+  if (gDbtProbeCselFired) {
+    return;
+  }
+  gDbtProbeCselFired = TRUE;
+
+  DBT_ARM64_STATE *S = gDbtActiveState;
+  if (S == NULL) {
+    return;
+  }
+  DEBUG ((DEBUG_INFO,
+    "DBT_PROBE: CSEL  x15=0x%llx x14=0x%llx x16=0x%llx x3=0x%llx x10=0x%llx hostsp=0x%llx\n",
+    S->X[15], S->X[14], S->X[16], S->X[3], S->X[10],
+    (UINT64)(UINTN)__builtin_frame_address (0)));
 }
 
 UINT64 DbtPacResolve (VOID) {
