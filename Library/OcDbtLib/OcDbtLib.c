@@ -3575,10 +3575,11 @@ VOID DbtProbeDivIn (VOID) {
   if (S == NULL) {
     return;
   }
+  UINT64 HostStack = (UINT64)(UINTN)&HostStack;
   DEBUG ((DEBUG_INFO,
     "DBT_PROBE: DIVIN x9=0x%llx x8=0x%llx x28=0x%llx w12=0x%llx sp=0x%llx hostsp=0x%llx\n",
     S->X[9], S->X[8], S->X[28], S->X[12] & 0xFFFFFFFF, S->SP,
-    (UINT64)(UINTN)__builtin_frame_address (0)));
+    HostStack));
 }
 
 VOID DbtProbeCsel (VOID) {
@@ -3591,10 +3592,11 @@ VOID DbtProbeCsel (VOID) {
   if (S == NULL) {
     return;
   }
+  UINT64 HostStack = (UINT64)(UINTN)&HostStack;
   DEBUG ((DEBUG_INFO,
     "DBT_PROBE: CSEL  x15=0x%llx x14=0x%llx x16=0x%llx x3=0x%llx x10=0x%llx hostsp=0x%llx\n",
     S->X[15], S->X[14], S->X[16], S->X[3], S->X[10],
-    (UINT64)(UINTN)__builtin_frame_address (0)));
+    HostStack));
 }
 
 UINT64 DbtPacResolve (VOID) {
