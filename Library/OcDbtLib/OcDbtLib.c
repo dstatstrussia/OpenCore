@@ -2513,6 +2513,14 @@ STATIC UINTN DbtTranslateOne (
         } else if (Op0 == 3 && Op1 == 3 && CRn == 10 && CRm == 14) {
           DBG((DEBUG_INFO, "DBT_SIMD: MSR CPACR_EL1 <- X%d (FP/SIMD enable)\n", Rt));
           EmitStoreRax(&P, OFFSET_OF(DBT_ARM64_STATE, CPACR_EL1));
+        } else if (Op0 == 3 && Op1 == 3 && CRn == 13 && CRm == 0 && Op2 == 0) {
+          // FPCR - Floating Point Control Register
+          DBG_D((DEBUG_INFO, "DBT_SIMD: MSR FPCR <- X%d\n", Rt));
+          EmitStoreRax(&P, OFFSET_OF(DBT_ARM64_STATE, FPCR));
+        } else if (Op0 == 3 && Op1 == 3 && CRn == 13 && CRm == 0 && Op2 == 1) {
+          // FPSR - Floating Point Status Register
+          DBG_D((DEBUG_INFO, "DBT_SIMD: MSR FPSR <- X%d\n", Rt));
+          EmitStoreRax(&P, OFFSET_OF(DBT_ARM64_STATE, FPSR));
         } else {
           DBG_D((DEBUG_INFO, "DBT_SYS:  MSR unknown (o0=%d o1=%d crn=%d crm=%d o2=%d)\n", Op0, Op1, CRn, CRm, Op2));
           EmitNop(&P);
@@ -2565,6 +2573,14 @@ STATIC UINTN DbtTranslateOne (
         } else if (Op0 == 3 && Op1 == 0 && CRn == 4 && CRm == 0 && Op2 == 1) {
           Off = OFFSET_OF(DBT_ARM64_STATE, SPSR_EL1);
           DBG((DEBUG_INFO, "DBT_EXC: MRS X%d, SPSR_EL1\n", Rt));
+        } else if (Op0 == 3 && Op1 == 3 && CRn == 13 && CRm == 0 && Op2 == 0) {
+          // FPCR - Floating Point Control Register
+          Off = OFFSET_OF(DBT_ARM64_STATE, FPCR);
+          DBG_D((DEBUG_INFO, "DBT_SIMD: MRS X%d, FPCR\n", Rt));
+        } else if (Op0 == 3 && Op1 == 3 && CRn == 13 && CRm == 0 && Op2 == 1) {
+          // FPSR - Floating Point Status Register
+          Off = OFFSET_OF(DBT_ARM64_STATE, FPSR);
+          DBG_D((DEBUG_INFO, "DBT_SIMD: MRS X%d, FPSR\n", Rt));
         } else {
           Known = FALSE;
           DBG_D((DEBUG_INFO, "DBT_SYS:  MRS X%d, unknown sysreg (key=0x%x)\n", Rt, Key));

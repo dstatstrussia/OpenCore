@@ -39,6 +39,8 @@ typedef struct {
   UINT64 MIDR_EL1;
   UINT64 MPIDR_EL1;
   UINT64 CNTFRQ_EL0;
+  UINT64 FPCR;      // Floating Point Control Register
+  UINT64 FPSR;      // Floating Point Status Register
   UINT64 CNTVCT_EL0;
   UINT64 CNTV_CTL_EL0;
   UINT64 CNTV_CVAL_EL0;
