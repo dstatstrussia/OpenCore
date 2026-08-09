@@ -1646,10 +1646,12 @@ SKIP_READ_APPLE_KERNEL:
     // The kernel's early boot shim touches globals at small offsets (e.g.
     // 0x1C0); with no backing they identity-map onto the x86 firmware's own
     // low pages and the read yields unrelated bytes the kernel later takes
-    // for a pointer (observed as a hang after the CPU-scan handoff).
+    // for a pointer (observed as a hang after the CPU-scan handoff).  The
+    // kernel's early console ring also lives by pointer at ~0x5967000 /
+    // ~0x5A7C000 (static __DATA global), so cover the whole first 8MB.
     //
     {
-      UINTN  PhysWinSize = EFI_PAGES_TO_SIZE (256);  // 1MB
+      UINTN  PhysWinSize = EFI_PAGES_TO_SIZE (2048);  // 8MB
       UINT8 *PhysWinBuffer;
       Status = gBS->AllocatePages (
                       AllocateAnyPages,
