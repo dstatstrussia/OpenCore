@@ -3335,19 +3335,6 @@ UINT64 DbtTranslateVaToPa (DBT_CONTEXT *Ctx, UINT64 Va) {
   //
   if (gDbtTraceEnabled) {
     DBG_D((DEBUG_WARN, "DBT_MMU: VA 0x%llx outside image — identity\n", Va));
-    //
-    // Dump the phys-window table so a missed window is diagnosable: the
-    // runtime table must match the registration lines at boot.
-    //
-    if (Ctx != NULL) {
-      for (UINTN W = 0; W < Ctx->PhysWinCount; W++) {
-        DBG_D((DEBUG_WARN,
-               "DBT_MMU:   win[%u] base=0x%llx size=0x%llx buf=%p%s\n",
-               W, Ctx->PhysWinBase[W], (UINT64)Ctx->PhysWinSize[W],
-               Ctx->PhysWinBuffer[W],
-               (Ctx->PhysWinBuffer[W] == NULL) ? " NULL" : ""));
-      }
-    }
   }
   return Va;
 }

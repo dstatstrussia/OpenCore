@@ -1648,10 +1648,11 @@ SKIP_READ_APPLE_KERNEL:
     // low pages and the read yields unrelated bytes the kernel later takes
     // for a pointer (observed as a hang after the CPU-scan handoff).  The
     // kernel's early console ring also lives by pointer at ~0x5967000 /
-    // ~0x5A7C000 (static __DATA global), so cover the whole first 8MB.
+    // ~0x5A7C000 (~93-95MB, static __DATA globals), so cover the whole
+    // 256MB.
     //
     {
-      UINTN  PhysWinSize = EFI_PAGES_TO_SIZE (2048);  // 8MB
+      UINTN  PhysWinSize = EFI_PAGES_TO_SIZE (65536);  // 256MB
       UINT8 *PhysWinBuffer;
       Status = gBS->AllocatePages (
                       AllocateAnyPages,
