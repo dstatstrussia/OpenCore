@@ -556,6 +556,17 @@ STATIC VOID EmitRorRcxImm (UINT8 **P, UINT8 Cnt) { EmitRexW(P); EmitByte(P, 0xC1
 
 // Apply a recorded register-form shift (1=LSL 2=LSR 3=ASR 4=ROR)
 STATIC VOID EmitShiftRcx (UINT8 **P, UINT8 Kind, UINT8 Amt) {
+  if (Kind >= 5) {
+    // Extended-register ADD/SUB flag sets: kinds 5..8 apply the UXTB..SXTW
+    // extension to Rm, then the (optional) left shift.  Unlike the plain
+    // shifts the extension must run even when Amt is 0.
+    if (Kind == 5) { EmitByte(P, 0x0F); EmitByte(P, 0xB6); EmitByte(P, 0xC9); }  // MOVZX ECX, CL
+    else if (Kind == 6) { EmitByte(P, 0x89); EmitByte(P, 0xC9); }               // MOV ECX, ECX
+    else if (Kind == 7) { EmitRexW(P); EmitByte(P, 0x0F); EmitByte(P, 0xBE); EmitByte(P, 0xC9); }  // MOVSX RCX, CL
+    else { EmitRexW(P); EmitByte(P, 0x63); EmitByte(P, 0xC9); }                 // MOVSXD RCX, ECX
+    if (Amt != 0) { EmitShlRcxImm(P, Amt); }
+    return;
+  }
   if (Kind == 0 || Amt == 0) { return; }
   if (Kind == 1) { EmitShlRcxImm(P, Amt); }
   else if (Kind == 2) { EmitShrRcxImm(P, Amt); }
@@ -1967,9 +1978,9 @@ STATIC UINTN DbtTranslateOne (
         if ((Inst >> 21) & 1) {
           //
           // ADD/SUB extended register: Xd = Xn + extend(Wm) << shift.
-          // Extend kinds (bits 23:22): 0=UXTB 1=UXTW 2=SXTB 3=SXTW.
+          // Extend kinds (bits 15:14): 0=UXTB 1=UXTW 2=SXTB 3=SXTW.
           //
-          UINT32 Ext = (Inst >> 22) & 3;
+          UINT32 Ext = (Inst >> 14) & 3;
           UINT32 Amt = (Inst >> 10) & 0x7;
 
           DBG_ASM((DEBUG_INFO, "DBT_ASM:    %s%s X%d, X%d, W%d, ext%d #%u\n",
@@ -1980,13 +1991,11 @@ STATIC UINTN DbtTranslateOne (
           if (IsW) EmitTrunc32(&P);
           if (Rm == 31) { EmitMovImm(&P, 0); } else { EmitLoadRcx(&P, RmOff); }
           if (Ext == 0) {          // UXTB
-            EmitByte(&P, 0x0F); EmitByte(&P, 0xB6); EmitByte(&P, 0xC1);  // MOVZX EAX, CL
-            EmitRexW(&P); EmitByte(&P, 0x89); EmitByte(&P, 0xC1);        // MOV RCX, RAX
+            EmitByte(&P, 0x0F); EmitByte(&P, 0xB6); EmitByte(&P, 0xC9);  // MOVZX ECX, CL
           } else if (Ext == 1) {   // UXTW
             EmitByte(&P, 0x89); EmitByte(&P, 0xC9);                      // MOV ECX, ECX
           } else if (Ext == 2) {   // SXTB
-            EmitRexW(&P); EmitByte(&P, 0x0F); EmitByte(&P, 0xBE); EmitByte(&P, 0xC1);  // MOVSX RAX, CL
-            EmitRexW(&P); EmitByte(&P, 0x89); EmitByte(&P, 0xC1);        // MOV RCX, RAX
+            EmitRexW(&P); EmitByte(&P, 0x0F); EmitByte(&P, 0xBE); EmitByte(&P, 0xC9);  // MOVSX RCX, CL
           } else {                 // SXTW
             EmitRexW(&P); EmitByte(&P, 0x63); EmitByte(&P, 0xC9);        // MOVSXD RCX, ECX
           }
@@ -2001,7 +2010,7 @@ STATIC UINTN DbtTranslateOne (
           }
           if (SetFlags) {
             EmitRecordFlagSet(Ctx, FLAGKIND_ADDSUB, IsSub, 0, Rd, Rn, Rm,
-                              TRUE, 0, (UINT8)((Ext << 1) | 1), Amt, IsW);
+                              TRUE, 0, (UINT8)(5 + Ext), Amt, IsW);
           }
           return (UINTN)(P - X86Buf);
         }
