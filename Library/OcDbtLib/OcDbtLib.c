@@ -3389,6 +3389,32 @@ UINT64 DbtTranslateVaToPa (DBT_CONTEXT *Ctx, UINT64 Va) {
         return (UINT64)(UINTN)(Ctx->PhysWinBuffer[W] + (UINTN)(Va - Ctx->PhysWinBase[W]));
       }
     }
+
+    //
+    // Linker-signed file-offset pointers (observed 0x00100000_00EB_02D4
+    // read from a __DATA_CONST table): the low 32 bits are the offset
+    // within the loaded image, the top 32 bits carry the signature.  The
+    // canonical segment walk above already consumed 0xFFFF... addresses,
+    // so anything reaching this point with the exact signature is a
+    // signed pointer the kernel expects to be resolved before use; without
+    // this it falls through to the identity mapping and the translated
+    // access reads garbage (freeze at pc=0xFFFFFE000BD4D7F4).
+    //
+    if ((Va >> 32) == 0x00100000) {
+      UINT64 Lo = Va & 0xFFFFFFFF;
+      for (I = 0; I < Ctx->SegCount; I++) {
+        if (Lo >= Ctx->SegFileOff[I] && Lo < Ctx->SegFileOff[I] + Ctx->SegVmSize[I]) {
+          UINT64 Map = Ctx->SegVmAddr[I] + (Lo - Ctx->SegFileOff[I]);
+          if (gDbtTraceEnabled) {
+            DBG_D((DEBUG_INFO, "DBT_MMU: signed ptr 0x%llx -> kernel 0x%llx\n",
+                 Va, Map));
+          }
+          return (UINT64)(UINTN)(Ctx->KernelBuffer
+                                 + Ctx->SegFileOff[I]
+                                 + (UINTN)(Lo - Ctx->SegFileOff[I]));
+        }
+      }
+    }
   }
 
   //
