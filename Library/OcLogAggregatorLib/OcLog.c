@@ -389,14 +389,14 @@ InternalLogAddEntry (
     // the file then contains plain CRLF-free lines.
     //
     {
-      UINTN TimLen = AsciiStrLen (Private->TimingTxt);
-      UINTN LinLen = AsciiStrLen (Private->LineBuffer);
+      UINTN  TimLen = AsciiStrLen (Private->TimingTxt);
+      UINTN  LinLen = AsciiStrLen (Private->LineBuffer);
 
       if (Private->AsciiBufferWrittenOffset + TimLen + LinLen + 2 < Private->AsciiBufferSize) {
         CopyMem (&Private->AsciiBuffer[Private->AsciiBufferWrittenOffset], Private->TimingTxt, TimLen);
         Private->AsciiBufferWrittenOffset += TimLen;
         CopyMem (&Private->AsciiBuffer[Private->AsciiBufferWrittenOffset], Private->LineBuffer, LinLen);
-        Private->AsciiBufferWrittenOffset += LinLen;
+        Private->AsciiBufferWrittenOffset                        += LinLen;
         Private->AsciiBuffer[Private->AsciiBufferWrittenOffset++] = '\n';
       }
     }
@@ -416,7 +416,7 @@ InternalLogAddEntry (
           // support (e.g. Aptio IV) this can result in corrupt file or unusable fs.
           //
           ASSERT (Private->AsciiBufferWrittenOffset >= Private->AsciiBufferFlushedOffset);
-          WriteSize   = Private->AsciiBufferWrittenOffset - Private->AsciiBufferFlushedOffset;
+          WriteSize = Private->AsciiBufferWrittenOffset - Private->AsciiBufferFlushedOffset;
           //
           // Batch the file writes: one Write+Flush per DebugPrint is the
           // dominant cost of verbose DBT boots.  Push only once the pending
@@ -424,7 +424,8 @@ InternalLogAddEntry (
           // fill (AsciiStrCatS would otherwise start dropping new lines).
           //
           if ((WriteSize >= OC_LOG_FILE_FLUSH_THRESHOLD) ||
-              (Private->AsciiBufferWrittenOffset >= (Private->AsciiBufferSize - OC_LOG_LINE_BUFFER_SIZE))) {
+              (Private->AsciiBufferWrittenOffset >= (Private->AsciiBufferSize - OC_LOG_LINE_BUFFER_SIZE)))
+          {
             WrittenSize = WriteSize;
             OcLog->UnsafeLogFile->Write (OcLog->UnsafeLogFile, &WrittenSize, &Private->AsciiBuffer[Private->AsciiBufferFlushedOffset]);
             OcLog->UnsafeLogFile->Flush (OcLog->UnsafeLogFile);
@@ -642,9 +643,9 @@ OcConfigureLogProtocol (
   // dispatcher — print a full runtime trace on screen and in the file.
   // DisplayDelay is cleared so long lines do not stall the boot.
   //
-  Options      |= OC_LOG_CONSOLE | OC_LOG_FILE;
-  DisplayDelay  = 0;
-  DisplayLevel  = (UINTN)0xFFFFFFFF;
+  Options     |= OC_LOG_CONSOLE | OC_LOG_FILE;
+  DisplayDelay = 0;
+  DisplayLevel = (UINTN)0xFFFFFFFF;
 
   if ((Options & (OC_LOG_FILE | OC_LOG_ENABLE)) == (OC_LOG_FILE | OC_LOG_ENABLE)) {
     LogRoot       = NULL;
@@ -785,7 +786,7 @@ OcConfigureLogProtocol (
     }
   }
 
-      if (LogRoot != NULL) {
+  if (LogRoot != NULL) {
     if (!EFI_ERROR (Status)) {
       if (  ((Options & OC_LOG_UNSAFE) == 0)
          && (OC_LOG_PRIVATE_DATA_FROM_OC_LOG_THIS (OcLog)->AsciiBufferSize > 0)
