@@ -39,7 +39,7 @@
 // hang the tail up to this threshold stays in RAM and is lost, but a stalled
 // guest repeats identical lines, so the stall remains readable.
 //
-#define OC_LOG_FILE_FLUSH_THRESHOLD   BASE_2KB
+#define OC_LOG_FILE_FLUSH_THRESHOLD  BASE_2KB
 
 #define OC_LOG_PRIVATE_DATA_SIGNATURE  SIGNATURE_32 ('O', 'C', 'L', 'G')
 
