@@ -83,5 +83,15 @@ typedef struct DBT_CONTEXT {
   DBT_FLAG_SET     FlagSet;
   DBT_FLAG_SET     PrevSlots[8];  // CCMP gate-chain snapshot pool
   UINTN            PrevCount;
+  //
+  // Hardware emulation infrastructure (GIC, Timer, MMIO, PCIe)
+  //
+  DBT_GIC_STATE    GicState;           // Generic Interrupt Controller
+  DBT_MMIO_TRAP    MmioTraps[DBT_MAX_PHYS_WINDOWS]; // MMIO trap slots
+  UINTN            MmioTrapCount;
+  DBT_PCIE_BAR     PcieBars[4];        // PCIe host controller BAR regions
+  UINTN            PcieBarCount;
+  DBT_DEVICE       Devices[DBT_MAX_DEVICES]; // Registered device array (embedded)
+  UINTN            DeviceCount;
   UINT8            CodeBuffer[0];
 } DBT_CONTEXT;

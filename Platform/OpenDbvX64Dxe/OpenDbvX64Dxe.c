@@ -933,6 +933,7 @@ DirectLoadKernel (
   )
 {
   EFI_STATUS                       Status;
+  UINTN                            VerboseStep = 0;
   EFI_SIMPLE_FILE_SYSTEM_PROTOCOL  *FileSystem;
   EFI_FILE_PROTOCOL                *RootDirectory;
   EFI_FILE_PROTOCOL                *KernelFile;
@@ -960,7 +961,11 @@ DirectLoadKernel (
   EFI_HANDLE                       Device;
   CONST CHAR16                     *KernelPath;
 
+  DEBUG ((DEBUG_VERBOSE, "DBT_LOADER: DirectLoadKernel entry — Picker=%p VerboseStep=%u\n",
+          PickerContext, VerboseStep++));
+
   if (gDbtContext == NULL) {
+    DEBUG ((DEBUG_ERROR, "DBT_LOADER: DBT context is NULL — abort\n"));
     return EFI_NOT_STARTED;
   }
 
@@ -969,6 +974,120 @@ DirectLoadKernel (
 
   DEBUG ((DEBUG_INFO, "DirectKernel: device=%p path=%s\n",
           Device, KernelPath != NULL ? KernelPath : L"<null>"));
+
+  //
+  // Auto-discovery: when no installer boot info is bound yet, scan the
+  // SimpleFileSystem handles for the macOS installer / SharedSupport volume
+  // and bind the translated boot to it. This lets the original macOS kernel
+  // (and its dyld shared cache) be located automatically, without requiring
+  // any manual kernel extraction step.
+  //
+  DEBUG ((DEBUG_VERBOSE, "DBT_LOADER: Auto-discovery start — Device=%p KernelPath=%ls Step=%u\n",
+          Device, KernelPath ? KernelPath : L"<null>", VerboseStep++));
+  if ((gDbtContext != NULL) && (Device == NULL)) {
+    EFI_HANDLE  *Handles;
+    UINTN       Count;
+    EFI_STATUS  ScanStatus;
+
+    ScanStatus = gBS->LocateHandleBuffer (
+                        ByProtocol,
+                        &gEfiSimpleFileSystemProtocolGuid,
+                        NULL,
+                        &Count,
+                        &Handles
+                        );
+    if (!EFI_ERROR (ScanStatus) && Count > 0) {
+      for (UINTN Idx = 0; Idx < Count; Idx++) {
+        EFI_SIMPLE_FILE_SYSTEM_PROTOCOL  *Fs;
+        EFI_FILE_PROTOCOL                *Root;
+        ScanStatus = gBS->HandleProtocol (Handles[Idx], &gEfiSimpleFileSystemProtocolGuid, (VOID **)&Fs);
+        if (!EFI_ERROR (ScanStatus)) {
+          ScanStatus = Fs->OpenVolume (Fs, &Root);
+          if (!EFI_ERROR (ScanStatus)) {
+            if (IsSharedSupportVolume (Root) || IsGoldenGateInstaller (Root)) {
+              Device = Handles[Idx];
+              gInstallerDevice = Handles[Idx];
+
+              //
+              // Probe the installer volume for a kernel across all known
+              // macOS installer layouts (legacy, GoldenGate and newer macOS
+              // releases that relocate the kernel / kernelcache into other
+              // directories). The first resolvable path wins; otherwise fall
+              // back to the classic SharedSupport location.
+              //
+              KernelPath = NULL;
+
+              {
+                EFI_FILE_PROTOCOL  *KernelProbe;
+                STATIC CONST CHAR16  *InstallerKernelPaths[] = {
+                  L"\\SharedSupport\\kernel",
+                  L"\\SharedSupport\\kernelcache.release",
+                  L"\\SharedSupport\\kernelcache.decomp",
+                  L"\\kernelcache.decomp",
+                  L"\\kernelcache.release",
+                  L"\\kernel",
+                  L"\\System\\Library\\Kernels\\kernel",
+                  L"\\System\\Library\\KernelCache\\kernelcache.release",
+                  L"\\com_apple_MobileAsset_MacSoftwareUpdate\\AssetData\\boot\\kernelcache.release.mac15j",
+                  L"\\com_apple_MobileAsset_MacSoftwareUpdate\\AssetData\\boot\\kernelcache.release.mac16j",
+                  L"\\AssetData\\boot\\kernelcache.release.mac15j",
+                  L"\\AssetData\\boot\\kernelcache.release.mac16j",
+                  NULL
+                };
+
+                for (UINTN KIdx = 0; InstallerKernelPaths[KIdx] != NULL; KIdx++) {
+                  Status = Root->Open (Root, &KernelProbe, InstallerKernelPaths[KIdx], EFI_FILE_MODE_READ, 0);
+                  if (!EFI_ERROR (Status)) {
+                    KernelProbe->Close (KernelProbe);
+                    DbtSetBootInfo (gDbtContext, gInstallerDevice, InstallerKernelPaths[KIdx]);
+                    KernelPath = DbtGetKernelPath (gDbtContext);
+                    DEBUG ((DEBUG_INFO, "DirectKernel: Installer kernel auto-detected at path %s\n", InstallerKernelPaths[KIdx]));
+                    break;
+                  }
+                }
+
+                if (KernelPath == NULL) {
+                  DbtSetBootInfo (gDbtContext, gInstallerDevice, L"\\SharedSupport\\kernel");
+                  KernelPath = DbtGetKernelPath (gDbtContext);
+                }
+              }
+            }
+
+            //
+            // Auto-detect the x86_64 dyld shared cache on the installer
+            // volume. The translated boot (DirectLoadKernel) then runs the
+            // original macOS installer kernel together with its shared cache
+            // without any manual extraction step. Newer macOS releases may
+            // relocate the shared cache into different subdirectories, so
+            // probe several known locations.
+            //
+            {
+              EFI_FILE_PROTOCOL  *CacheFile;
+              STATIC CONST CHAR16  *InstallerCachePaths[] = {
+                L"\\System\\Library\\dyld\\shared_cache.x86_64h",
+                L"\\System\\Library\\dyld\\shared_cache.x86_64",
+                L"\\SharedSupport\\dyld\\shared_cache.x86_64h",
+                L"\\SharedSupport\\dyld\\shared_cache.x86_64",
+                NULL
+              };
+
+              for (UINTN CIdx = 0; InstallerCachePaths[CIdx] != NULL; CIdx++) {
+                Status = Root->Open (Root, &CacheFile, InstallerCachePaths[CIdx], EFI_FILE_MODE_READ, 0);
+                if (!EFI_ERROR (Status)) {
+                  DEBUG ((DEBUG_INFO, "DirectKernel: dyld shared cache (x86_64) auto-detected at path %s\n", InstallerCachePaths[CIdx]));
+                  CacheFile->Close (CacheFile);
+                  break;
+                }
+              }
+            }
+            Root->Close (Root);
+          }
+        }
+      }
+      FreePool (Handles);
+    }
+  }
+
   if (Device == NULL || KernelPath == NULL) {
     DEBUG ((DEBUG_ERROR, "DirectKernel: No boot info set\n"));
     return EFI_NOT_STARTED;
@@ -1539,6 +1658,12 @@ SKIP_READ_APPLE_KERNEL:
   }
 
   ZeroMem (BootArgs, BootArgsSize);
+  DEBUG ((DEBUG_VERBOSE, "DBT_LOADER: BootArgs init — Revision=%u Version=%u Mode=%llx\n",
+          BootArgs->Revision, BootArgs->Version, BootArgs->efiMode));
+  DEBUG ((DEBUG_VERBOSE, "DBT_LOADER: BootArgs — kaddr=0x%llx ksize=%u dtP=0x%llx dtLen=%u\n",
+          BootArgs->kaddr, BootArgs->ksize, BootArgs->deviceTreeP, BootArgs->deviceTreeLength));
+  DEBUG ((DEBUG_VERBOSE, "DBT_LOADER: CommandLine='%a'\n", BootArgs->CommandLine));
+
   BootArgs->Revision = kBootArgsRevision2_0;
   BootArgs->Version  = kBootArgsVersion2;
   BootArgs->efiMode  = Is32Bit ? kBootArgsEfiMode32 : kBootArgsEfiMode64;
@@ -1613,7 +1738,10 @@ SKIP_READ_APPLE_KERNEL:
     // nonzero file offset, so VA->file-offset mapping goes through the
     // LC_SEGMENT_64 table rather than assuming entry == image base.
     //
-    KernelVaBase = EntryPoint;
+    DEBUG ((DEBUG_VERBOSE, "DBT_LOADER: MachO Segments=%u Base=0x%llx End=0x%llx\n",
+          SegCount, KernelVaBase, KernelVaEnd));
+
+  KernelVaBase = EntryPoint;
     for (Index = 0; Index < SegCount; Index++) {
       if (SegVmAddr[Index] < KernelVaBase) {
         KernelVaBase = SegVmAddr[Index];
@@ -1731,8 +1859,8 @@ SKIP_READ_APPLE_KERNEL:
                       );
       if (!EFI_ERROR (Status)) {
         ZeroMem (CpuSlotWinBuffer, CpuSlotWinSize);
-        DEBUG ((DEBUG_INFO, "DirectKernel: cpu slot window allocated host=%p base=0x%llx sz=0x%x\n",
-                CpuSlotWinBuffer, CpuSlotWinBase, CpuSlotWinSize));
+        DEBUG ((DEBUG_INFO, "DirectKernel: cpu slot window host=%p base=0x%llx sz=%x VerboseStep=%u\n",
+                CpuSlotWinBuffer, CpuSlotWinBase, CpuSlotWinSize, VerboseStep));
 
         if (EFI_ERROR (DbtSetPhysWindow (gDbtContext, CpuSlotWinBase, CpuSlotWinSize, CpuSlotWinBuffer))) {
           DEBUG ((DEBUG_ERROR, "DirectKernel: cpu slot window set failed\n"));
@@ -1847,6 +1975,8 @@ SKIP_READ_APPLE_KERNEL:
               ArmContext.X[21], ArmContext.X[22], ArmContext.X[23], ArmContext.X[24]));
       DEBUG ((DEBUG_INFO, "DirectKernel: x25=0x%llx x26=0x%llx x27=0x%llx x28=0x%llx\n",
               ArmContext.X[25], ArmContext.X[26], ArmContext.X[27], ArmContext.X[28]));
+      DEBUG ((DEBUG_VERBOSE, "DBT_LOADER: Final state Steps=%u PC=0x%llx SP=0x%llx\n",
+              Steps, ArmContext.PC, ArmContext.SP));
     }
 
     // Should not reach here

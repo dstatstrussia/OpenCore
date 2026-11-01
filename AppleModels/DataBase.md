@@ -1,6 +1,6 @@
 DataBase list
 =============
-Non-x86 models are excluded.
+Apple Silicon models are included in the database for SMBIOS spoofing purposes.
 
 | Mac-model | DataBase |
 |:----------|:---------|
@@ -40,6 +40,7 @@ MacBookAir7,2 | [Yes](https://github.com/acidanthera/OpenCorePkg/blob/master/App
 MacBookAir8,1 | [Yes](https://github.com/acidanthera/OpenCorePkg/blob/master/AppleModels/DataBase/MacBookAir/MBA81.yaml)
 MacBookAir8,2 | [Yes](https://github.com/acidanthera/OpenCorePkg/blob/master/AppleModels/DataBase/MacBookAir/MBA82.yaml)
 MacBookAir9,1 | [Yes](https://github.com/acidanthera/OpenCorePkg/blob/master/AppleModels/DataBase/MacBookAir/MBA91.yaml)
+MacBookAir10,1 | [Yes](https://github.com/acidanthera/OpenCorePkg/blob/master/AppleModels/DataBase/MacBookAir/MBA101.yaml)
 ||
 MacBookPro1,1 | [Yes](https://github.com/acidanthera/OpenCorePkg/blob/master/AppleModels/DataBase/MacBookPro/MBP11.yaml)
 MacBookPro1,2 | [Yes](https://github.com/acidanthera/OpenCorePkg/blob/master/AppleModels/DataBase/MacBookPro/MBP12.yaml)
@@ -82,6 +83,7 @@ MacBookPro16,1 | [Yes](https://github.com/acidanthera/OpenCorePkg/blob/master/Ap
 MacBookPro16,2 | [Yes](https://github.com/acidanthera/OpenCorePkg/blob/master/AppleModels/DataBase/MacBookPro/MBP162.yaml)
 MacBookPro16,3 | [Yes](https://github.com/acidanthera/OpenCorePkg/blob/master/AppleModels/DataBase/MacBookPro/MBP163.yaml)
 MacBookPro16,4 | [Yes](https://github.com/acidanthera/OpenCorePkg/blob/master/AppleModels/DataBase/MacBookPro/MBP164.yaml)
+MacBookPro17,1 | [Yes](https://github.com/acidanthera/OpenCorePkg/blob/master/AppleModels/DataBase/MacBookPro/MBP171.yaml)
 ||
 Macmini1,1 | [Yes](https://github.com/acidanthera/OpenCorePkg/blob/master/AppleModels/DataBase/Macmini/MM11.yaml)
 Macmini2,1 | [Yes](https://github.com/acidanthera/OpenCorePkg/blob/master/AppleModels/DataBase/Macmini/MM21.yaml)
@@ -94,6 +96,7 @@ Macmini6,1 | [Yes](https://github.com/acidanthera/OpenCorePkg/blob/master/AppleM
 Macmini6,2 | [Yes](https://github.com/acidanthera/OpenCorePkg/blob/master/AppleModels/DataBase/Macmini/MM62.yaml)
 Macmini7,1 | [Yes](https://github.com/acidanthera/OpenCorePkg/blob/master/AppleModels/DataBase/Macmini/MM71.yaml)
 Macmini8,1 | [Yes](https://github.com/acidanthera/OpenCorePkg/blob/master/AppleModels/DataBase/Macmini/MM81.yaml)
+Macmini9,1 | [Yes](https://github.com/acidanthera/OpenCorePkg/blob/master/AppleModels/DataBase/Macmini/MM91.yaml)
 ||
 Xserve1,1 | [Yes](https://github.com/acidanthera/OpenCorePkg/blob/master/AppleModels/DataBase/Xserve/XS11.yaml)
 Xserve2,1 | [Yes](https://github.com/acidanthera/OpenCorePkg/blob/master/AppleModels/DataBase/Xserve/XS21.yaml)
@@ -133,3 +136,5 @@ iMac19,1 | [Yes](https://github.com/acidanthera/OpenCorePkg/blob/master/AppleMod
 iMac19,2 | [Yes](https://github.com/acidanthera/OpenCorePkg/blob/master/AppleModels/DataBase/iMac/IM192.yaml)
 iMac20,1 | [Yes](https://github.com/acidanthera/OpenCorePkg/blob/master/AppleModels/DataBase/iMac/IM201.yaml)
 iMac20,2 | [Yes](https://github.com/acidanthera/OpenCorePkg/blob/master/AppleModels/DataBase/iMac/IM202.yaml)
+iMac21,1 | [Yes](https://github.com/acidanthera/OpenCorePkg/blob/master/AppleModels/DataBase/iMac/IM211.yaml)
+iMac21,2 | [Yes](https://github.com/acidanthera/OpenCorePkg/blob/master/AppleModels/DataBase/iMac/IM212.yaml)
