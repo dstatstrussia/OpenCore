@@ -2,6 +2,7 @@
  "Mac-EE2EBD4B90B839A8": "13.7.8",
  "Mac-BE0E8AC46FE800CC": "11.7.11",
  "Mac-9AE82516C7C6B903": "12.7.6",
+ "MacBookAir10,1": "latest",
  "Mac-942452F5819B1C1B": "10.13.6",
  "Mac-942C5DF58193131B": "10.13.6",
  "Mac-C08A6BB70A942AC2": "10.13.6",
@@ -37,6 +38,7 @@
  "Mac-5F9802EFE386AA28": "latest",
  "Mac-E7203C0F68AA0004": "15.7.4",
  "Mac-A61BADE1FDAD7B05": "latest",
+ "MacBookPro17,1": "latest",
  "Mac-F22589C8": "10.13.6",
  "Mac-94245B3640C91C81": "10.13.6",
  "Mac-94245A3940C91C80": "10.13.6",
@@ -75,5 +77,7 @@
  "Mac-63001698E7A34814": "15.7.4",
  "Mac-CFF7D910A743CAAF": "latest",
  "Mac-AF89B6D9451A490B": "latest",
+ "iMac21,1": "latest",
+ "iMac21,2": "latest",
  "Mac-7BA5B2D9E42DDD94": "15.7.4"
 }

@@ -10,6 +10,7 @@
 #include <Uefi.h>
 
 #define DBT_MAX_PHYS_WINDOWS  4
+#define DBT_MAX_DEVICES      16
 
 /**
   ARM64 CPU state for translation. Registers stored in memory for save/restore.
@@ -60,6 +61,44 @@ typedef struct {
   Compatibility alias
 **/
 typedef DBT_ARM64_STATE DBT_ARM64_CONTEXT;
+
+typedef struct {
+  UINT32 GICD_CTLR;   // Distributor control
+  UINT32 GICD_TYPER;  // Distributor type
+  UINT32 GICC_CTLR;   // CPU interface control
+  UINT32 GICC_PMR;    // Priority mask
+  UINT32 GICC_BPR;    // Binary point
+  UINT32 GICC_RPR;    // Running priority
+  UINT32 GICC_HPPIR;  // Highest pending interrupt
+  UINT32 InterruptSet; // Pending interrupts bitmap
+} DBT_GIC_STATE;
+
+typedef struct DBT_MMIO_TRAP {
+  UINT64 BaseAddr;
+  UINT64 Size;
+  VOID  (*ReadHandler)(UINT64 Offset, UINT32 Size, UINT64 *Value);
+  VOID  (*WriteHandler)(UINT64 Offset, UINT32 Size, UINT64 Value);
+  VOID  *Context;
+  BOOLEAN Active;
+} DBT_MMIO_TRAP;
+
+typedef struct DBT_PCIE_BAR {
+  UINT64 PhysBase;
+  UINT64 Size;
+  UINT32 BarIndex;
+  BOOLEAN Enabled;
+  UINT8  *HostMapping;
+} DBT_PCIE_BAR;
+
+typedef struct DBT_DEVICE {
+  CONST CHAR16 *Name;    // Device name (NVMe / SATA / USB / GPU etc.)
+  DBT_MMIO_TRAP *Traps;  // MMIO trap array
+  UINTN TrapCount;
+  DBT_PCIE_BAR *Bars;    // PCIe BAR mapping
+  UINTN BarCount;
+  DBT_GIC_STATE *Gic;    // Associated GIC state
+  BOOLEAN Registered;
+} DBT_DEVICE;
 
 /**
   DBT translation context (opaque)

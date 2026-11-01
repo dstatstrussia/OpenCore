@@ -1,0 +1,75 @@
+BIOSVendor: "Apple Inc."
+BIOSVersion: "20.0.0.0.0"
+BIOSLegacyVersion: "MM91.88Z.F000.B00.2009212129"
+BIOSReleaseDate: "11/20/2020"
+SystemManufacturer: "Apple Inc."
+SystemProductName: "Macmini9,1"
+SystemVersion: "1.0"
+SystemSerialNumber: "J2W6W8A1Z8H2Z"
+SystemSKUNumber: ""
+SystemFamily: "Mac mini"
+BoardManufacturer: "Apple Inc."
+BoardProduct: "Macmini9,1"
+BoardVersion: "Macmini9,1"
+BoardRevision: 0x3
+BoardAssetTag: ""
+BoardType: 0xA
+BoardLocationInChassis: ""
+ChassisManufacturer: "Apple Inc."
+ChassisType: 0x9
+ChassisVersion: "Macmini9,1"
+ChassisAssetTag: ""
+PlatformFeature: 0x32
+FirmwareFeatures: 0x8FD8FF53E
+FirmwareFeaturesMask: 0x8FF9FFF3F
+ExtendedFirmwareFeatures: 0x00000008FD8FF53E
+ExtendedFirmwareFeaturesMask: 0x00000008FFF9FFF3F
+MemoryFormFactor: 0xD
+# FIXME: Correct this one
+ProcessorType:
+  - 0x0301
+# FIXME: Correct this one
+ProcessorBusSpeed:
+  - 12345
+SmcGeneration: 0x0
+SmcPlatform:
+  - 0x6a
+  - 0x31
+  - 0x35
+  - 0x32
+  - 0x66
+  - 0x00
+  - 0x00
+  - 0x00
+OEMStrings: |-
+  Apple ROM Version
+    Model:        MM91
+    EFI Version:  20.0.0.0.0
+    Date:         Fri Nov 20 14:58:29 2020
+    Build Type:   Release
+Specifications:
+  CPUCodename:
+    - "Apple M1"
+  CPU:
+    - "Apple M1 with 8-core CPU"
+  GPU:
+    - "Apple GPU"
+  RAM:
+    - "8GB"
+  SystemReportName:
+    - "Mac mini (Late 2020)"
+  MarketingName:
+    - "Mac mini (Late 2020)"
+# Note, first model code is used by macserial
+AppleModelCode:
+  - "0T6L"
+# Note, first board code is used by macserial
+# FIXME: check
+AppleBoardCode:
+  - "0T6L"
+# Note, first year is used by macserial
+AppleModelYear:
+  - 2020
+MinimumOSVersion: "11.0.0"
+MaximumOSVersion: null
+AppleModelId: "J274"
