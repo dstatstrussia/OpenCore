@@ -2984,6 +2984,18 @@ if (Opt == 2 || Opt == 6 || Opt == 3) {
 
 // =========== Public API ===========
 
+// Forward declarations for DBT hardware emulation layer
+STATIC EFI_STATUS DbtGicInit (IN DBT_CONTEXT *Ctx);
+STATIC EFI_STATUS DbtRegisterAllDevices (IN DBT_CONTEXT *Ctx);
+EFI_STATUS DbtMmioRegister (IN DBT_CONTEXT *Ctx, IN CONST CHAR16 *Name, IN UINT64 PhysBase, IN UINT64 Size, VOID (*Read)(UINT64, UINT32, UINT64 *), VOID (*Write)(UINT64, UINT32, UINT64));
+EFI_STATUS DbtAddDevice (IN DBT_CONTEXT *Ctx, IN CONST CHAR16 *Name);
+EFI_STATUS DbtGicSetPriority (IN DBT_CONTEXT *Ctx, IN UINT32 InterruptId, IN UINT8 Priority);
+EFI_STATUS DbtPcieBarMap (IN DBT_CONTEXT *Ctx, IN UINT32 BarIndex, IN UINT64 PhysBase, IN UINT64 Size);
+STATIC VOID DbtPcieReadForBar (UINT64 Offset, UINT32 Size, UINT64 *Value);
+STATIC VOID DbtPcieWriteForBar (UINT64 Offset, UINT32 Size, UINT64 Value);
+STATIC BOOLEAN DbtTimerMatch (IN UINT64 CntVct, IN UINT64 CntVctl, IN UINT64 CntVCVal, IN UINT64 Offset);
+STATIC DBT_PCIE_BAR *gPcieActiveBar;
+
 EFI_STATUS DbtInitContext (OUT DBT_CONTEXT **Context, IN UINTN CodeSize) {
   EFI_STATUS Status;
   DBT_CONTEXT *Ctx;
@@ -3016,18 +3028,6 @@ EFI_STATUS DbtInitContext (OUT DBT_CONTEXT **Context, IN UINTN CodeSize) {
   DBG((DEBUG_INFO, "DBT: code=%p cap=0x%x type=BS-code\n",
        Ctx->TranslatedCode, CodeSize));
 
-  // Forward declarations for DBT hardware emulation layer (used in DbtInitContext before definitions)
-  STATIC EFI_STATUS DbtGicInit (IN DBT_CONTEXT *Ctx);
-  STATIC EFI_STATUS DbtRegisterAllDevices (IN DBT_CONTEXT *Ctx);
-  STATIC EFI_STATUS DbtMmioRegister (IN DBT_CONTEXT *Ctx, IN CONST CHAR16 *Name, IN UINT64 PhysBase, IN UINT64 Size, VOID (*Read)(UINT64, UINT32, UINT64 *), VOID (*Write)(UINT64, UINT32, UINT64));
-  STATIC EFI_STATUS DbtAddDevice (IN DBT_CONTEXT *Ctx, IN CONST CHAR16 *Name);
-  STATIC EFI_STATUS DbtGicSetPriority (IN DBT_CONTEXT *Ctx, IN UINT32 InterruptId, IN UINT8 Priority);
-  STATIC EFI_STATUS DbtPcieBarMap (IN DBT_CONTEXT *Ctx, IN UINT32 BarIndex, IN UINT64 PhysBase, IN UINT64 Size);
-  STATIC VOID DbtPcieReadForBar (UINT64 Offset, UINT32 Size, UINT64 *Value);
-  STATIC VOID DbtPcieWriteForBar (UINT64 Offset, UINT32 Size, UINT64 Value);
-  STATIC BOOLEAN DbtTimerMatch (IN UINT64 CntVct, IN UINT64 CntVctl, IN UINT64 CntVCVal, IN UINT64 Offset);
-  STATIC DBT_PCIE_BAR *gPcieActiveBar;
-
   //
   // Init ARM64 system state for identity-mapped boot
   //
@@ -3050,12 +3050,7 @@ EFI_STATUS DbtInitContext (OUT DBT_CONTEXT **Context, IN UINTN CodeSize) {
   Ctx->MmioTrapCount = 0;
   Ctx->PcieBarCount  = 0;
   Ctx->DeviceCount   = 0;
-  ZeroMem (&Ctx->GicState, sizeof (Ctx->GicState));
-  Ctx->GicState.GICD_TYPER  = 0x60;
-  Ctx->GicState.GICC_PMR   = 0xFF;
-  Ctx->GicState.GICC_BPR   = 0x00;
-  Ctx->GicState.GICC_CTLR  = 0x0;
-  Ctx->GicState.InterruptSet = 0;
+  DbtGicInit(Ctx);
 
   // Register all 7 real Apple Silicon device drivers (NVMe / USB / GPU+ANE / SE / TB / Audio / Video)
   DbtRegisterAllDevices (Ctx);
