@@ -3364,7 +3364,7 @@ STATIC EFI_STATUS DbtGicInit (IN DBT_CONTEXT *Ctx) {
 }
 
 EFI_STATUS DbtGicSetPriority (IN DBT_CONTEXT *Ctx, IN UINT32 InterruptId, IN UINT8 Priority) {
-  if (!Ctx || !Ctx->Devices || !Ctx->DeviceCount) return EFI_UNSUPPORTED;
+  if (!Ctx || !Ctx->DeviceCount) return EFI_UNSUPPORTED;
   UINTN Idx = 0;
   for (; Idx < Ctx->DeviceCount; Idx++) {
     if (Ctx->Devices[Idx].Registered && (Ctx->Devices[Idx].Gic == &Ctx->GicState)) {
