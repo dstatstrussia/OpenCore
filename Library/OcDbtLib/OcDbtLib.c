@@ -3507,7 +3507,7 @@ STATIC BOOLEAN DbtTimerMatch (IN UINT64 CntVct, IN UINT64 CntVctl, IN UINT64 Cnt
 VOID DbtAddTimerCallback (IN DBT_CONTEXT *Ctx, IN UINT64 Offset, IN VOID (*Callback)(UINT64)) {
   if (!Ctx || !Callback) return;
   static DBT_MMIO_TRAP TempTrap;
-  BOOLEAN Match = DbtTimerMatch(Ctx->ArmState.CNTVCT_EL0, 0, 24000000, Offset);
+  (VOID)DbtTimerMatch(Ctx->ArmState.CNTVCT_EL0, 0, 24000000, Offset);
   TempTrap.BaseAddr  = OFFSET_OF(DBT_ARM64_STATE, CNTVCT_EL0) + Offset;
   TempTrap.Size      = 0;
   TempTrap.ReadHandler   = NULL;
