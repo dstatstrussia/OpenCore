@@ -1036,7 +1036,7 @@ DirectLoadKernel (
                 };
 
                 for (UINTN KIdx = 0; InstallerKernelPaths[KIdx] != NULL; KIdx++) {
-                  Status = Root->Open (Root, &KernelProbe, InstallerKernelPaths[KIdx], EFI_FILE_MODE_READ, 0);
+                  Status = Root->Open (Root, &KernelProbe, (CHAR16 *)InstallerKernelPaths[KIdx], EFI_FILE_MODE_READ, 0);
                   if (!EFI_ERROR (Status)) {
                     KernelProbe->Close (KernelProbe);
                     DbtSetBootInfo (gDbtContext, gInstallerDevice, InstallerKernelPaths[KIdx]);
@@ -1072,7 +1072,7 @@ DirectLoadKernel (
               };
 
               for (UINTN CIdx = 0; InstallerCachePaths[CIdx] != NULL; CIdx++) {
-                Status = Root->Open (Root, &CacheFile, InstallerCachePaths[CIdx], EFI_FILE_MODE_READ, 0);
+                Status = Root->Open (Root, &CacheFile, (CHAR16 *)InstallerCachePaths[CIdx], EFI_FILE_MODE_READ, 0);
                 if (!EFI_ERROR (Status)) {
                   DEBUG ((DEBUG_INFO, "DirectKernel: dyld shared cache (x86_64) auto-detected at path %s\n", InstallerCachePaths[CIdx]));
                   CacheFile->Close (CacheFile);
@@ -1711,8 +1711,8 @@ SKIP_READ_APPLE_KERNEL:
   //
   if (IsArm64 && gDbtContext != NULL) {
     DBT_ARM64_STATE  ArmContext;
-    UINT64           KernelVaBase;
-    UINT64           KernelVaEnd;
+    UINT64           KernelVaBase = 0;
+    UINT64           KernelVaEnd  = 0;
     UINTN            Steps;
     UINTN            MaxSteps;
 
