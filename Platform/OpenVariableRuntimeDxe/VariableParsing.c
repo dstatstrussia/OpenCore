@@ -755,11 +755,17 @@ UpdateVariableInfo (
       // the EFI System Table.
       //
       *VariableInfo = AllocateZeroPool (sizeof (VARIABLE_INFO_ENTRY));
-      ASSERT (*VariableInfo != NULL);
+      if (*VariableInfo == NULL) {
+        return;
+      }
 
       CopyGuid (&(*VariableInfo)->VendorGuid, VendorGuid);
       (*VariableInfo)->Name = AllocateZeroPool (StrSize (VariableName));
-      ASSERT ((*VariableInfo)->Name != NULL);
+      if ((*VariableInfo)->Name == NULL) {
+        FreePool (*VariableInfo);
+        *VariableInfo = NULL;
+        return;
+      }
       StrCpyS ((*VariableInfo)->Name, StrSize (VariableName)/sizeof (CHAR16), VariableName);
       (*VariableInfo)->Volatile = Volatile;
     }
@@ -793,11 +799,17 @@ UpdateVariableInfo (
         // Next iteration of the loop will fill in the data.
         //
         Entry->Next = AllocateZeroPool (sizeof (VARIABLE_INFO_ENTRY));
-        ASSERT (Entry->Next != NULL);
+        if (Entry->Next == NULL) {
+          return;
+        }
 
         CopyGuid (&Entry->Next->VendorGuid, VendorGuid);
         Entry->Next->Name = AllocateZeroPool (StrSize (VariableName));
-        ASSERT (Entry->Next->Name != NULL);
+        if (Entry->Next->Name == NULL) {
+          FreePool (Entry->Next);
+          Entry->Next = NULL;
+          return;
+        }
         StrCpyS (Entry->Next->Name, StrSize (VariableName)/sizeof (CHAR16), VariableName);
         Entry->Next->Volatile = Volatile;
       }
