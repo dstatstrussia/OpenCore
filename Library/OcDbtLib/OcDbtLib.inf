@@ -39,3 +39,7 @@
 
 [Sources]
   OcDbtLib.c
+  OcDbtComplex.c
+
+[BuildOptions]
+  GCC:*_*_*_CC_FLAGS = -m80387
