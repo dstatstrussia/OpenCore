@@ -1853,6 +1853,7 @@ UpdateVariable (
           Status = EFI_INVALID_PARAMETER;
           goto Done;
         }
+
         State  = CacheVariable->InDeletedTransitionPtr->State;
         State &= VAR_DELETED;
         Status = UpdateVariableStore (
@@ -2355,6 +2356,7 @@ UpdateVariable (
         Status = EFI_INVALID_PARAMETER;
         goto Done;
       }
+
       State  = CacheVariable->InDeletedTransitionPtr->State;
       State &= VAR_DELETED;
       Status = UpdateVariableStore (

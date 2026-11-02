@@ -766,6 +766,7 @@ UpdateVariableInfo (
         *VariableInfo = NULL;
         return;
       }
+
       StrCpyS ((*VariableInfo)->Name, StrSize (VariableName)/sizeof (CHAR16), VariableName);
       (*VariableInfo)->Volatile = Volatile;
     }
@@ -810,6 +811,7 @@ UpdateVariableInfo (
           Entry->Next = NULL;
           return;
         }
+
         StrCpyS (Entry->Next->Name, StrSize (VariableName)/sizeof (CHAR16), VariableName);
         Entry->Next->Volatile = Volatile;
       }
