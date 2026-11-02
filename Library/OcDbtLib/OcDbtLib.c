@@ -11,6 +11,7 @@
 #include <Library/UefiBootServicesTableLib.h>
 #include <Library/OcMemoryLib.h>
 #include "OcDbtLib.h"
+#include "OcDbtComplex.h"
 
 #ifndef OFFSET_OF
 #define OFFSET_OF(TYPE, Field)  ((UINTN)(&((TYPE *)0)->Field))
@@ -52,7 +53,7 @@
 // code works regardless of the firmware toolchain ABI (MS x64: RCX,
 // SysV: RDI).  Set by DbtExecute immediately before each Entry call.
 //
-STATIC DBT_ARM64_STATE *gDbtActiveState = NULL;
+DBT_ARM64_STATE *gDbtActiveState = NULL;
 
 //
 // Context pointer and guest-address scratch slot for the host-side data
@@ -66,6 +67,14 @@ STATIC DBT_ARM64_STATE *gDbtActiveState = NULL;
 //
 STATIC DBT_CONTEXT *gDbtActiveCtx = NULL;
 STATIC UINT64       gDbtHelperVa  = 0;
+
+// Complex-instruction globals (defined in OcDbtComplex.c)
+// DBT_ARM64_STATE *gDbtComplexInst = NULL; // alias
+// UINT32          gDbtComplexInstCode = 0;
+
+// Accessors for emitted x86
+DBT_ARM64_STATE *DbtActiveState (VOID) { return gDbtActiveState; }
+DBT_CONTEXT     *DbtActiveCtx   (VOID) { return gDbtActiveCtx; }
 
 //
 // Pointer-authentication emulation (see the definitions further below).
@@ -2669,6 +2678,18 @@ STATIC UINTN DbtTranslateOne (
           // TPIDRRO_EL0 - read-only thread ID (El0)
           Off = OFFSET_OF(DBT_ARM64_STATE, TPIDRRO_EL0);
           DBG_D((DEBUG_INFO, "DBT_SYS:  MRS X%d, TPIDRRO_EL0\n", Rt));
+        } else if (Op0 == 3 && Op1 == 3 && CRn == 4 && CRm == 2 && Op2 == 0) {
+          // CurrentEL - read current exception level
+          Off = OFFSET_OF(DBT_ARM64_STATE, PSTATE); // approximate via PSTATE bits
+          DBG((DEBUG_INFO, "DBT_SYS:  MRS X%d, CurrentEL\n", Rt));
+        } else if (Op0 == 3 && Op1 == 3 && CRn == 4 && CRm == 3 && Op2 == 4) {
+          // DAIF - debug/interrupt flags
+          Off = OFFSET_OF(DBT_ARM64_STATE, PSTATE);
+          DBG((DEBUG_INFO, "DBT_SYS:  MRS X%d, DAIF\n", Rt));
+        } else if (Op0 == 3 && Op1 == 3 && CRn == 14 && CRm == 0 && Op2 == 1) {
+          // CNTPCT_EL0 - physical counter
+          Off = OFFSET_OF(DBT_ARM64_STATE, CNTVCT_EL0); // reuse timer stub
+          DBG_D((DEBUG_INFO, "DBT_SYS:  MRS X%d, CNTPCT_EL0\n", Rt));
         } else {
           Known = FALSE;
           DBG_D((DEBUG_INFO, "DBT_SYS:  MRS X%d, unknown sysreg (key=0x%x)\n", Rt, Key));
@@ -2977,7 +2998,25 @@ if (Opt == 2 || Opt == 6 || Opt == 3) {
     return (UINTN)(P - X86Buf);
   }
 
-  DBG_ASM((DEBUG_INFO, "DBT_ASM:   UNKNOWN op0=0x%X -> NOP\n", Op0));
+  STATIC BOOLEAN DbtUnsupportedLogged = FALSE;
+  if (!DbtUnsupportedLogged) {
+    DbtUnsupportedLogged = TRUE;
+    DBG((DEBUG_WARN, "DBT_COMPLEX: unsupported/complex instruction at PC=0x%x inst=0x%x (routed to DbtExecComplex)\n",
+         (UINT32)(UINTN)gDbtActiveState ? (UINT32)gDbtActiveState->PC : 0, (UINT32)Inst));
+  }
+  DBG_ASM((DEBUG_INFO, "DBT_ASM:   UNKNOWN op0=0x%X -> COMPLEX\n", Op0));
+  // Deliver instruction code and state to ABI-agnostic globals, then
+  // call the host-side complex helper.
+  // RCX = Inst; RAX = &gDbtComplexInstCode; MOV [RAX], RCX
+  EmitMovRcxImm(&P, (UINT32)Inst);
+  EmitMovImm(&P, (UINT64)(UINTN)&gDbtComplexInstCode);
+  EmitStoreGlobalRcx(&P);
+  // RCX = &gDbtActiveState (delivered as Inst pointer alias); RAX = &gDbtComplexInst; MOV [RAX], RCX
+  EmitMovRcxImm(&P, (UINT64)(UINTN)gDbtActiveState);
+  EmitMovImm(&P, (UINT64)(UINTN)&gDbtComplexInst);
+  EmitStoreGlobalRcx(&P);
+  EmitMovImm(&P, (UINT64)(UINTN)DbtExecComplex);
+  EmitByte(&P, 0xFF); EmitByte(&P, 0xD0);  // CALL RAX
   EmitNop(&P);
   return (UINTN)(P - X86Buf);
 }
@@ -4449,19 +4488,20 @@ UINT64 DbtHandleException (DBT_CONTEXT *Ctx, UINT64 ExceptionType, UINT64 FaultA
 
   UINT64  Vbar = Ctx->ArmState.VBAR_EL1;
   UINT64  VecOff;
+  BOOLEAN IsEl1Sp = ((Ctx->ArmState.PSTATE >> 2) & 1) == 1;  // SP_ELx
 
   switch (ExceptionType) {
     case 0:  // Synchronous from current EL with SP_ELx
-      VecOff = 0x000;
+      VecOff = IsEl1Sp ? 0x200 : 0x000;
       break;
     case 1:  // IRQ from current EL
-      VecOff = 0x080;
+      VecOff = IsEl1Sp ? 0x280 : 0x400;
       break;
     case 2:  // FIQ from current EL
-      VecOff = 0x100;
+      VecOff = IsEl1Sp ? 0x300 : 0x400;
       break;
     case 3:  // SError from current EL
-      VecOff = 0x180;
+      VecOff = IsEl1Sp ? 0x380 : 0x400;
       break;
     default:
       VecOff = 0x000;
