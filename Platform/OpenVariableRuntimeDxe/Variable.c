@@ -1457,7 +1457,9 @@ AutoUpdateLangVariable (
     }
 
     mVariableModuleGlobal->PlatformLangCodes = AllocateRuntimeCopyPool (DataSize, Data);
-    ASSERT (mVariableModuleGlobal->PlatformLangCodes != NULL);
+    if (mVariableModuleGlobal->PlatformLangCodes == NULL) {
+      return EFI_OUT_OF_RESOURCES;
+    }
 
     //
     // PlatformLang holds a single language from PlatformLangCodes,
@@ -1468,7 +1470,9 @@ AutoUpdateLangVariable (
     }
 
     mVariableModuleGlobal->PlatformLang = AllocateRuntimePool (DataSize);
-    ASSERT (mVariableModuleGlobal->PlatformLang != NULL);
+    if (mVariableModuleGlobal->PlatformLang == NULL) {
+      return EFI_OUT_OF_RESOURCES;
+    }
   } else if (StrCmp (VariableName, EFI_LANG_CODES_VARIABLE_NAME) == 0) {
     //
     // LangCodes is a volatile variable, so it can not be updated at runtime.
@@ -1488,7 +1492,9 @@ AutoUpdateLangVariable (
     }
 
     mVariableModuleGlobal->LangCodes = AllocateRuntimeCopyPool (DataSize, Data);
-    ASSERT (mVariableModuleGlobal->LangCodes != NULL);
+    if (mVariableModuleGlobal->LangCodes == NULL) {
+      return EFI_OUT_OF_RESOURCES;
+    }
   }
 
   if (  SetLanguageCodes
@@ -1843,7 +1849,10 @@ UpdateVariable (
         // Both ADDED and IN_DELETED_TRANSITION variable are present,
         // set IN_DELETED_TRANSITION one to DELETED state first.
         //
-        ASSERT (CacheVariable->InDeletedTransitionPtr != NULL);
+        if (CacheVariable->InDeletedTransitionPtr == NULL) {
+          Status = EFI_INVALID_PARAMETER;
+          goto Done;
+        }
         State  = CacheVariable->InDeletedTransitionPtr->State;
         State &= VAR_DELETED;
         Status = UpdateVariableStore (
@@ -2342,7 +2351,10 @@ UpdateVariable (
       // Both ADDED and IN_DELETED_TRANSITION old variable are present,
       // set IN_DELETED_TRANSITION one to DELETED state first.
       //
-      ASSERT (CacheVariable->InDeletedTransitionPtr != NULL);
+      if (CacheVariable->InDeletedTransitionPtr == NULL) {
+        Status = EFI_INVALID_PARAMETER;
+        goto Done;
+      }
       State  = CacheVariable->InDeletedTransitionPtr->State;
       State &= VAR_DELETED;
       Status = UpdateVariableStore (
@@ -3557,7 +3569,6 @@ ConvertNormalVarStorageToAuthVarStorage (
   // Allocate Runtime memory for Auth Variable Storage
   //
   AuthVarStorage = AllocateRuntimeZeroPool (AuthVarStroageSize);
-  ASSERT (AuthVarStorage != NULL);
   if (AuthVarStorage == NULL) {
     return NULL;
   }

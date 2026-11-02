@@ -213,8 +213,15 @@ InternalSyncWithThunderboltDevices (
                       );
 
       if (!EFI_ERROR (Status)) {
-        if (*(UINT32 *)((UINTN)Interface + sizeof (UINT32)) == 0) {
-          (*(VOID (EFIAPI **)(VOID *))((UINTN)Interface + 232))(Interface);
+        //
+        // Validate interface pointer before dereferencing with magic offsets.
+        // These offsets (4 and 232) are based on reverse-engineered protocol structure.
+        // In release builds, if the structure changes, this could cause crashes.
+        //
+        if (Interface != NULL) {
+          if (*(UINT32 *)((UINTN)Interface + sizeof (UINT32)) == 0) {
+            (*(VOID (EFIAPI **)(VOID *))((UINTN)Interface + 232))(Interface);
+          }
         }
       }
     }
