@@ -82,6 +82,7 @@ AppleDebugLogPrint (
   UINTN             Length;
   CHAR8             *NewLinePos;
   APPLE_PERF_ENTRY  *Entry;
+  UINT8             *BufferEnd;
   UINT32            Index;
 
   if (!mAppleDebugLogEnable) {
@@ -100,9 +101,21 @@ AppleDebugLogPrint (
      && (mApplePerfBuffer->Signature == APPLE_PERF_DATA_SIGNATURE)
      && (mApplePerfBuffer->NumberOfEntries > mApplePerfDumped))
   {
-    Entry = APPLE_PERF_FIRST_ENTRY (mApplePerfBuffer);
+    Entry     = APPLE_PERF_FIRST_ENTRY (mApplePerfBuffer);
+    BufferEnd = (UINT8 *)mApplePerfBuffer + mApplePerfBufferSize;
 
     for (Index = 0; Index < mApplePerfBuffer->NumberOfEntries; ++Index) {
+      //
+      // Do not trust the buffer contents: stop at malformed or truncated entries.
+      //
+      if ((UINT8 *)Entry + sizeof (APPLE_PERF_ENTRY) > BufferEnd) {
+        break;
+      }
+
+      if ((UINT8 *)Entry + sizeof (APPLE_PERF_ENTRY) + Entry->EntryDataSize > BufferEnd) {
+        break;
+      }
+
       if (Index == mApplePerfDumped) {
         AppleDebugLogPrintToOcLog (
           OcLog,
