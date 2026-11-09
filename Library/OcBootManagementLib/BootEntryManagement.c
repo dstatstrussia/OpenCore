@@ -32,13 +32,6 @@
 #include <Library/UefiLib.h>
 #include <Library/UefiRuntimeServicesTableLib.h>
 
-STATIC
-EFI_STATUS
-InternalAddBootEntryFromIAPhysicalMedia (
-  IN OUT OC_BOOT_CONTEXT     *BootContext,
-  IN OUT OC_BOOT_FILESYSTEM  *FileSystem
-  );
-
 /*
    Expands DevicePath from short-form to full-form.
   The only valid expansions are full Device Paths refering to a file or a
@@ -2250,11 +2243,6 @@ OcScanForBootEntries (
     // Record predefined recoveries.
     //
     AddBootEntryFromSelfRecovery (BootContext, FileSystem);
-
-    //
-    // Try IA physical media marker for macOS 27 installer detection.
-    //
-    InternalAddBootEntryFromIAPhysicalMedia (BootContext, FileSystem);
   }
 
   if (CustomFileSystem != NULL) {
@@ -2652,69 +2640,3 @@ OcLoadBootEntry (
   return Status;
 }
 
-/**
-  macOS 27 Golden Gate installer detection via .IAPhysicalMedia marker.
-
-  @param[in,out] BootContext   Context of filesystems.
-  @param[in,out] FileSystem    Filesystem to check.
-
-  @retval EFI_SUCCESS if installer entry was created.
-  @retval EFI_NOT_FOUND if .IAPhysicalMedia marker was not found.
-**/
-STATIC
-EFI_STATUS
-InternalAddBootEntryFromIAPhysicalMedia (
-  IN OUT OC_BOOT_CONTEXT     *BootContext,
-  IN OUT OC_BOOT_FILESYSTEM  *FileSystem
-  )
-{
-  EFI_STATUS                       Status;
-  EFI_SIMPLE_FILE_SYSTEM_PROTOCOL  *FsProtocol;
-  EFI_FILE_PROTOCOL                *RootDir;
-  EFI_FILE_PROTOCOL                *MarkerFile;
-
-  Status = gBS->HandleProtocol (
-                  FileSystem->Handle,
-                  &gEfiSimpleFileSystemProtocolGuid,
-                  (VOID **)&FsProtocol
-                  );
-
-  if (EFI_ERROR (Status)) {
-    return Status;
-  }
-
-  Status = FsProtocol->OpenVolume (FsProtocol, &RootDir);
-  if (EFI_ERROR (Status)) {
-    return Status;
-  }
-
-  // Check for .IAPhysicalMedia marker (macOS 27 installer)
-  Status = RootDir->Open (
-                      RootDir,
-                      &MarkerFile,
-                      L"\\.IAPhysicalMedia",
-                      EFI_FILE_MODE_READ,
-                      0
-                      );
-
-  if (!EFI_ERROR (Status)) {
-    MarkerFile->Close (MarkerFile);
-    // Create placeholder installer entry for GoldenGate Beta
-    OC_BOOT_ENTRY  *BootEntry;
-    BootEntry = AllocateZeroPool (sizeof (*BootEntry));
-    if (BootEntry != NULL) {
-      BootEntry->Id               = AllocateCopyPool (AsciiStrSize ("macOS-Installer-GoldenGate"), "macOS-Installer-GoldenGate");
-      BootEntry->Name             = AllocateCopyPool (L_STR_SIZE (L"macOS 27 Beta Installer"), L"macOS 27 Beta Installer");
-      BootEntry->Type             = OC_BOOT_APPLE_OS;
-      BootEntry->IsAppleInstaller = TRUE;
-      BootEntry->IsExternal       = FileSystem->External;
-      InsertTailList (&FileSystem->BootEntries, &BootEntry->Link);
-      ++BootContext->BootEntryCount;
-      RootDir->Close (RootDir);
-      return EFI_SUCCESS;
-    }
-  }
-
-  RootDir->Close (RootDir);
-  return EFI_NOT_FOUND;
-}

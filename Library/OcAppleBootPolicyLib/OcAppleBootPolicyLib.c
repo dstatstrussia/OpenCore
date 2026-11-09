@@ -908,28 +908,13 @@ OcBootPolicyGetBootFile (
   }
 
   //
-  // macOS 27+ Golden Gate Beta installer check
-  // Installer volumes have .IAPhysicalMedia marker but no boot.efi
-  // SharedSupport is mounted separately
+  // Do not use .IAPhysicalMedia to identify macOS 27.  That marker exists on
+  // every installer volume since 10.13.4 and says nothing about the installed
+  // macOS version.  Golden Gate installers still ship
+  // \System\Library\CoreServices\boot.efi; it is an ARM64 image, so LoadImage
+  // rejects it and the DBT boot entry takes over.  Returning EFI_NOT_FOUND
+  // here would hide the booter from the normal picker for all installers.
   //
-  EFI_FILE_PROTOCOL  *MarkerFile;
-
-  Status = Root->Open (
-                   Root,
-                   &MarkerFile,
-                   L"\\.IAPhysicalMedia",
-                   EFI_FILE_MODE_READ,
-                   0
-                   );
-  if (!EFI_ERROR (Status)) {
-    MarkerFile->Close (MarkerFile);
-    DEBUG ((DEBUG_INFO, "OCBP: macOS 27 Golden Gate installer detected via .IAPhysicalMedia\n"));
-    // For Golden Gate installer, we need to find SharedSupport volume separately
-    // Return special path that OpenDbv will handle
-    Root->Close (Root);
-    return EFI_NOT_FOUND;
-  }
-
   Status = InternalGetBooterFromBlessedSystemFilePath (Root, FilePath);
   if (EFI_ERROR (Status)) {
     Status = InternalGetBooterFromBlessedSystemFolderPath (Device, Root, FilePath);

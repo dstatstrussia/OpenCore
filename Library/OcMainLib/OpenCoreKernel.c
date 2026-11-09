@@ -1545,7 +1545,7 @@ OcLoadKernelSupport (
     mOcStorage                       = Storage;
     mOcConfiguration                 = Config;
     mOcCpuInfo                       = CpuInfo;
-    mOcDarwinVersion                 = KERNEL_VERSION_GOLDENGATE_MIN;
+    mOcDarwinVersion                 = 0;
     mOcCachelessInProgress           = FALSE;
     mCustomKernelDirectoryInProgress = FALSE;
     //
