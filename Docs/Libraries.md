@@ -15,7 +15,7 @@
 * OcDevicePathLib — Device path management and transformation
 * OcDevicePropertyLib — Apple device property protocol implementation
 * OcFileLib — Supplemental file I/O
-* OcFirmwarePasswordLib — Apple firmware password protocol implementation
+* OcAppleFirmwarePasswordLib — Apple firmware password protocol implementation
 * OcGuardLib — Basic sanity checking (static assertions, overflow maths)
 * OcMachoLib — Mach-O image handling and transformation
 * OcMiscLib — Miscellaneous stuff not fitting elsewhere

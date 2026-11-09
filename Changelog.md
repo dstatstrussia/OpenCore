@@ -1,9 +1,20 @@
 OpenCore Changelog
 ==================
+#### v1.0.9
+- Made pressed buttons darker instead of highlighting them in OpenCanopy, thx @ilikesn0w
+- Added minor configuration sample improvements, thx @ilikesn0w
+- Fixed not detecting CD/DVD media type in boot picker leading to incorrect icon selection, thx @ilikesn0w
+- Fixed legacy IOHIDSystem kext linkage handling when injecting into prelinked kernel collections
+
 #### v1.0.8
 - Fixed macrecovery utility on Windows, thx @pzhlkj6612
 - Added launch helper for macrecovery utility on Windows, thx @aayushprsingh
 - Added option to hide verbose output from any driver, thx @ilikesn0w
+- Re-enable Secure Boot after DMG loading, thx @albert-mueller
+- Fixed uninitialized L3 cache value on CPUs without L3 cache, thx @bugprogrammer
+- Added grub4dos detection to OpenLegacyBoot, thx @bugprogrammer
+- Added OpticalDrive icon to OpenCanopy, thx @ilikesn0w
+- Fixed unresolved ATAPI device paths on NVMe Macs during hibernation, thx @rctphone
 
 #### v1.0.7
 - Improved `XhciPortLimit` compatibility with macOS Tahoe, thx @laobamac
