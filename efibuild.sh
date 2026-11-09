@@ -232,6 +232,11 @@ fi
 if [ "$(unamer)" = "Windows" ]; then
   # Preserve existing PATH but add common tool locations at the front
   export PATH="/c/ProgramData/Chocolatey/bin:/c/Strawberry/c/bin:$PATH"
+  # Current Chocolatey nasm packages use the official installer and no longer
+  # create a shim, so pick up the default installation directory explicitly.
+  if [ -d "/c/Program Files/NASM" ]; then
+    export PATH="/c/Program Files/NASM:$PATH"
+  fi
 fi
 
 # Check for zip - on Windows it might be zip.exe
