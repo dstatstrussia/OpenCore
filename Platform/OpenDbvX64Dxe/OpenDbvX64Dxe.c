@@ -458,54 +458,272 @@ ReadKernelFromZip (
 
 STATIC
 BOOLEAN
-IsGoldenGateInstaller (
+IsArm64BootEfi (
   IN  EFI_FILE_PROTOCOL  *RootDirectory
   )
 {
-  EFI_STATUS  Status;
+  EFI_STATUS         Status;
   EFI_FILE_PROTOCOL  *File;
-  CHAR16  *MarkerPath = L"\\.IAPhysicalMedia";
+  UINT8              Header[128];
+  UINTN              ReadSize;
+  UINT32             PeOffset;
+  UINT16             Machine;
 
   Status = RootDirectory->Open (
-                          RootDirectory,
-                          &File,
-                          MarkerPath,
-                          EFI_FILE_MODE_READ,
-                          0
-                          );
+                           RootDirectory,
+                           &File,
+                           L"\\System\\Library\\CoreServices\\boot.efi",
+                           EFI_FILE_MODE_READ,
+                           0
+                           );
+  if (EFI_ERROR (Status)) {
+    return FALSE;
+  }
 
-  if (!EFI_ERROR (Status)) {
-    File->Close (File);
+  ReadSize = sizeof (Header);
+  Status   = File->Read (File, &ReadSize, Header);
+  File->Close (File);
+
+  if (EFI_ERROR (Status) || (ReadSize < 64) || (*(UINT16 *)Header != 0x5A4D)) {
+    return FALSE;
+  }
+
+  PeOffset = *(UINT32 *)(Header + 0x3C);
+  if ((PeOffset + 6) > ReadSize) {
+    return FALSE;
+  }
+
+  if (*(UINT32 *)(Header + PeOffset) != 0x00004550) {
+    return FALSE;
+  }
+
+  Machine = *(UINT16 *)(Header + PeOffset + 4);
+  if (Machine == 0xAA64) {
+    DEBUG ((DEBUG_INFO, "DBT: ARM64 boot.efi found, kernel must boot through DBT\n"));
     return TRUE;
   }
 
   return FALSE;
 }
 
+//
+// Enumerate a directory for the kernel cache.  Recent installers name the
+// cache after the board (kernelcache.release.mac15j, mac16j, ...), so the
+// name must not be hardcoded.
+//
 STATIC
 BOOLEAN
-IsSharedSupportVolume (
-  IN  EFI_FILE_PROTOCOL  *RootDirectory
+FindKernelInDirectory (
+  IN  EFI_FILE_PROTOCOL  *Directory,
+  IN  CONST CHAR16       *DirectoryPath,
+  OUT CHAR16             *KernelPath,
+  IN  UINTN              KernelPathSize
   )
 {
-  EFI_STATUS  Status;
-  EFI_FILE_PROTOCOL  *Dir;
-  CHAR16  *Path = L"\\com_apple_MobileAsset_MacSoftwareUpdate";
+  EFI_STATUS     Status;
+  EFI_FILE_INFO  *Info;
+  UINT8          *Buffer;
+  UINTN          BufferSize;
+  UINTN          ReadSize;
 
-  Status = RootDirectory->Open (
-                           RootDirectory,
-                           &Dir,
-                           Path,
-                           EFI_FILE_MODE_READ,
-                           0
-                           );
+  BufferSize = SIZE_256KB;
+  Buffer     = AllocatePool (BufferSize);
+  if (Buffer == NULL) {
+    return FALSE;
+  }
 
-  if (!EFI_ERROR (Status)) {
-    Dir->Close (Dir);
-    return TRUE;
+  for (;;) {
+    ReadSize = BufferSize;
+    Status   = Directory->Read (Directory, &ReadSize, Buffer);
+    if (EFI_ERROR (Status) || (ReadSize == 0)) {
+      break;
+    }
+
+    Info = (EFI_FILE_INFO *)Buffer;
+    while ((UINTN)Info < (UINTN)Buffer + ReadSize) {
+      if (Info->Size == 0) {
+        break;
+      }
+
+      if (  ((Info->Attribute & EFI_FILE_DIRECTORY) == 0)
+         && (StrnCmp (Info->FileName, L"kernelcache.", 12) == 0))
+      {
+        UnicodeSPrint (KernelPath, KernelPathSize, L"%s\\%s", DirectoryPath, Info->FileName);
+        FreePool (Buffer);
+        return TRUE;
+      }
+
+      Info = (EFI_FILE_INFO *)((UINT8 *)Info + Info->Size);
+    }
+  }
+
+  FreePool (Buffer);
+  return FALSE;
+}
+
+//
+// Find the macOS kernel / kernel cache on an installer or SharedSupport
+// volume.  Both the classic layouts and the MobileAsset layout used by
+// recent installers are probed.
+//
+STATIC
+BOOLEAN
+FindInstallerKernel (
+  IN  EFI_FILE_PROTOCOL  *RootDirectory,
+  OUT CHAR16             *KernelPath,
+  IN  UINTN              KernelPathSize
+  )
+{
+  EFI_STATUS         Status;
+  EFI_FILE_PROTOCOL  *File;
+  EFI_FILE_PROTOCOL  *Directory;
+  UINTN              Index;
+
+  STATIC CONST CHAR16  *KernelPaths[] = {
+    L"\\SharedSupport\\kernel",
+    L"\\SharedSupport\\kernelcache.release",
+    L"\\SharedSupport\\kernelcache.decomp",
+    L"\\kernelcache.decomp",
+    L"\\kernelcache.release",
+    L"\\kernel",
+    L"\\System\\Library\\Kernels\\kernel",
+    L"\\System\\Library\\KernelCache\\kernelcache.release",
+    NULL
+  };
+
+  STATIC CONST CHAR16  *KernelDirs[] = {
+    L"\\com_apple_MobileAsset_MacSoftwareUpdate\\AssetData\\boot",
+    L"\\AssetData\\boot",
+    L"\\SharedSupport",
+    NULL
+  };
+
+  for (Index = 0; KernelPaths[Index] != NULL; ++Index) {
+    Status = RootDirectory->Open (
+                             RootDirectory,
+                             &File,
+                             (CHAR16 *)KernelPaths[Index],
+                             EFI_FILE_MODE_READ,
+                             0
+                             );
+    if (!EFI_ERROR (Status)) {
+      File->Close (File);
+      UnicodeSPrint (KernelPath, KernelPathSize, L"%s", KernelPaths[Index]);
+      return TRUE;
+    }
+  }
+
+  for (Index = 0; KernelDirs[Index] != NULL; ++Index) {
+    Status = RootDirectory->Open (
+                             RootDirectory,
+                             &Directory,
+                             (CHAR16 *)KernelDirs[Index],
+                             EFI_FILE_MODE_READ,
+                             0
+                             );
+    if (EFI_ERROR (Status)) {
+      continue;
+    }
+
+    if (FindKernelInDirectory (Directory, KernelDirs[Index], KernelPath, KernelPathSize)) {
+      Directory->Close (Directory);
+      return TRUE;
+    }
+
+    Directory->Close (Directory);
   }
 
   return FALSE;
+}
+
+//
+// Locate the volume that actually holds the installer kernel.  On recent
+// installers the ARM64 boot.efi lives on the installer volume while the
+// x86_64 kernel and dyld shared cache live on a separate SharedSupport
+// volume, so every SimpleFileSystem handle is probed.
+//
+STATIC
+EFI_HANDLE
+FindInstallerKernelDevice (
+  IN  EFI_HANDLE  PreferredDevice OPTIONAL,
+  OUT CHAR16      *KernelPath,
+  IN  UINTN       KernelPathSize
+  )
+{
+  EFI_STATUS                       Status;
+  EFI_SIMPLE_FILE_SYSTEM_PROTOCOL  *FileSystem;
+  EFI_FILE_PROTOCOL                *Root;
+  EFI_HANDLE                       *Handles;
+  UINTN                            Count;
+  UINTN                            Index;
+  EFI_HANDLE                       Result;
+
+  KernelPath[0] = L'\0';
+  Result        = NULL;
+
+  if (PreferredDevice != NULL) {
+    Status = gBS->HandleProtocol (
+                    PreferredDevice,
+                    &gEfiSimpleFileSystemProtocolGuid,
+                    (VOID **)&FileSystem
+                    );
+    if (!EFI_ERROR (Status)) {
+      Status = FileSystem->OpenVolume (FileSystem, &Root);
+      if (!EFI_ERROR (Status)) {
+        if (FindInstallerKernel (Root, KernelPath, KernelPathSize)) {
+          Result = PreferredDevice;
+        }
+
+        Root->Close (Root);
+      }
+    }
+
+    if (Result != NULL) {
+      return Result;
+    }
+  }
+
+  Status = gBS->LocateHandleBuffer (
+                  ByProtocol,
+                  &gEfiSimpleFileSystemProtocolGuid,
+                  NULL,
+                  &Count,
+                  &Handles
+                  );
+  if (EFI_ERROR (Status) || (Count == 0)) {
+    return NULL;
+  }
+
+  for (Index = 0; Index < Count; ++Index) {
+    if (Handles[Index] == PreferredDevice) {
+      continue;
+    }
+
+    Status = gBS->HandleProtocol (
+                    Handles[Index],
+                    &gEfiSimpleFileSystemProtocolGuid,
+                    (VOID **)&FileSystem
+                    );
+    if (EFI_ERROR (Status)) {
+      continue;
+    }
+
+    Status = FileSystem->OpenVolume (FileSystem, &Root);
+    if (EFI_ERROR (Status)) {
+      continue;
+    }
+
+    if (FindInstallerKernel (Root, KernelPath, KernelPathSize)) {
+      Result = Handles[Index];
+      Root->Close (Root);
+      break;
+    }
+
+    Root->Close (Root);
+  }
+
+  FreePool (Handles);
+  return Result;
 }
 
 STATIC
@@ -985,106 +1203,23 @@ DirectLoadKernel (
   DEBUG ((DEBUG_VERBOSE, "DBT_LOADER: Auto-discovery start — Device=%p KernelPath=%ls Step=%u\n",
           Device, KernelPath ? KernelPath : L"<null>", VerboseStep++));
   if ((gDbtContext != NULL) && (Device == NULL)) {
-    EFI_HANDLE  *Handles;
-    UINTN       Count;
-    EFI_STATUS  ScanStatus;
+    CHAR16      KernelPathBuf[256];
+    EFI_HANDLE  KernelDevice;
 
-    ScanStatus = gBS->LocateHandleBuffer (
-                        ByProtocol,
-                        &gEfiSimpleFileSystemProtocolGuid,
-                        NULL,
-                        &Count,
-                        &Handles
-                        );
-    if (!EFI_ERROR (ScanStatus) && Count > 0) {
-      for (UINTN Idx = 0; Idx < Count; Idx++) {
-        EFI_SIMPLE_FILE_SYSTEM_PROTOCOL  *Fs;
-        EFI_FILE_PROTOCOL                *Root;
-        ScanStatus = gBS->HandleProtocol (Handles[Idx], &gEfiSimpleFileSystemProtocolGuid, (VOID **)&Fs);
-        if (!EFI_ERROR (ScanStatus)) {
-          ScanStatus = Fs->OpenVolume (Fs, &Root);
-          if (!EFI_ERROR (ScanStatus)) {
-            if (IsSharedSupportVolume (Root) || IsGoldenGateInstaller (Root)) {
-              Device = Handles[Idx];
-              gInstallerDevice = Handles[Idx];
-
-              //
-              // Probe the installer volume for a kernel across all known
-              // macOS installer layouts (legacy, GoldenGate and newer macOS
-              // releases that relocate the kernel / kernelcache into other
-              // directories). The first resolvable path wins; otherwise fall
-              // back to the classic SharedSupport location.
-              //
-              KernelPath = NULL;
-
-              {
-                EFI_FILE_PROTOCOL  *KernelProbe;
-                STATIC CONST CHAR16  *InstallerKernelPaths[] = {
-                  L"\\SharedSupport\\kernel",
-                  L"\\SharedSupport\\kernelcache.release",
-                  L"\\SharedSupport\\kernelcache.decomp",
-                  L"\\kernelcache.decomp",
-                  L"\\kernelcache.release",
-                  L"\\kernel",
-                  L"\\System\\Library\\Kernels\\kernel",
-                  L"\\System\\Library\\KernelCache\\kernelcache.release",
-                  L"\\com_apple_MobileAsset_MacSoftwareUpdate\\AssetData\\boot\\kernelcache.release.mac15j",
-                  L"\\com_apple_MobileAsset_MacSoftwareUpdate\\AssetData\\boot\\kernelcache.release.mac16j",
-                  L"\\AssetData\\boot\\kernelcache.release.mac15j",
-                  L"\\AssetData\\boot\\kernelcache.release.mac16j",
-                  NULL
-                };
-
-                for (UINTN KIdx = 0; InstallerKernelPaths[KIdx] != NULL; KIdx++) {
-                  Status = Root->Open (Root, &KernelProbe, (CHAR16 *)InstallerKernelPaths[KIdx], EFI_FILE_MODE_READ, 0);
-                  if (!EFI_ERROR (Status)) {
-                    KernelProbe->Close (KernelProbe);
-                    DbtSetBootInfo (gDbtContext, gInstallerDevice, InstallerKernelPaths[KIdx]);
-                    KernelPath = DbtGetKernelPath (gDbtContext);
-                    DEBUG ((DEBUG_INFO, "DirectKernel: Installer kernel auto-detected at path %s\n", InstallerKernelPaths[KIdx]));
-                    break;
-                  }
-                }
-
-                if (KernelPath == NULL) {
-                  DbtSetBootInfo (gDbtContext, gInstallerDevice, L"\\SharedSupport\\kernel");
-                  KernelPath = DbtGetKernelPath (gDbtContext);
-                }
-              }
-            }
-
-            //
-            // Auto-detect the x86_64 dyld shared cache on the installer
-            // volume. The translated boot (DirectLoadKernel) then runs the
-            // original macOS installer kernel together with its shared cache
-            // without any manual extraction step. Newer macOS releases may
-            // relocate the shared cache into different subdirectories, so
-            // probe several known locations.
-            //
-            {
-              EFI_FILE_PROTOCOL  *CacheFile;
-              STATIC CONST CHAR16  *InstallerCachePaths[] = {
-                L"\\System\\Library\\dyld\\shared_cache.x86_64h",
-                L"\\System\\Library\\dyld\\shared_cache.x86_64",
-                L"\\SharedSupport\\dyld\\shared_cache.x86_64h",
-                L"\\SharedSupport\\dyld\\shared_cache.x86_64",
-                NULL
-              };
-
-              for (UINTN CIdx = 0; InstallerCachePaths[CIdx] != NULL; CIdx++) {
-                Status = Root->Open (Root, &CacheFile, (CHAR16 *)InstallerCachePaths[CIdx], EFI_FILE_MODE_READ, 0);
-                if (!EFI_ERROR (Status)) {
-                  DEBUG ((DEBUG_INFO, "DirectKernel: dyld shared cache (x86_64) auto-detected at path %s\n", InstallerCachePaths[CIdx]));
-                  CacheFile->Close (CacheFile);
-                  break;
-                }
-              }
-            }
-            Root->Close (Root);
-          }
-        }
-      }
-      FreePool (Handles);
+    //
+    // Probe every SimpleFileSystem handle for a kernel.  The kernel is
+    // commonly on a separate SharedSupport volume, so looking only at the
+    // volume that carries boot.efi is not enough.
+    //
+    KernelDevice = FindInstallerKernelDevice (NULL, KernelPathBuf, sizeof (KernelPathBuf));
+    if (KernelDevice != NULL) {
+      Device           = KernelDevice;
+      gInstallerDevice = KernelDevice;
+      DbtSetBootInfo (gDbtContext, KernelDevice, KernelPathBuf);
+      KernelPath = DbtGetKernelPath (gDbtContext);
+      DEBUG ((DEBUG_INFO, "DirectKernel: installer kernel auto-detected at %s\n", KernelPathBuf));
+    } else {
+      DEBUG ((DEBUG_WARN, "DirectKernel: no installer kernel found on any volume\n"));
     }
   }
 
@@ -1112,16 +1247,14 @@ DirectLoadKernel (
   //
   {
     STATIC CONST CHAR16  *FallbackPaths[] = {
-      L"\\kernelcache.decomp",
+      L"\\SharedSupport\\kernel",
+      L"\\SharedSupport\\kernelcache.release",
+      L"\\SharedSupport\\kernelcache.decomp",
       L"\\kernelcache.decomp",
       L"\\kernelcache.release",
       L"\\kernel",
-      L"\\SharedSupport\\kernel",
       L"\\System\\Library\\Kernels\\kernel",
-      L"\\com_apple_MobileAsset_MacSoftwareUpdate\\AssetData\\boot\\kernelcache.release.mac15j",
-      L"\\com_apple_MobileAsset_MacSoftwareUpdate\\AssetData\\boot\\kernelcache.release.mac16j",
-      L"\\AssetData\\boot\\kernelcache.release.mac15j",
-      L"\\AssetData\\boot\\kernelcache.release.mac16j",
+      L"\\System\\Library\\KernelCache\\kernelcache.release",
       NULL
     };
     UINTN  PathIndex;
@@ -2022,119 +2155,21 @@ DbtBootEntryAction (
   RaiseScreenVerbose ();
   DEBUG ((DEBUG_INFO, "DBT: starting DirectKernel\n"));
   //
-  // Fallback: scan all filesystems for kernel if no boot info yet
+  // Fallback: scan all filesystems for the installer kernel if no boot info
+  // is bound yet.  The kernel is commonly found on a SharedSupport volume or
+  // inside a MobileAsset directory, so every SimpleFileSystem handle is probed.
   //
   if ((gDbtContext != NULL) && (DbtGetInstallerDevice (gDbtContext) == NULL)) {
-    EFI_HANDLE  *Handles;
-    UINTN       Count;
-    EFI_STATUS  ScanStatus;
+    CHAR16      KernelPathBuf[256];
+    EFI_HANDLE  KernelDevice;
 
-    ScanStatus = gBS->LocateHandleBuffer (
-                        ByProtocol,
-                        &gEfiSimpleFileSystemProtocolGuid,
-                        NULL,
-                        &Count,
-                        &Handles
-                        );
-    if (!EFI_ERROR (ScanStatus) && Count > 0) {
-      //
-      // FIRST PASS: log all handles with their volume info
-      //
-      for (UINTN Idx = 0; Idx < Count; Idx++) {
-        EFI_SIMPLE_FILE_SYSTEM_PROTOCOL  *Fs;
-        EFI_FILE_PROTOCOL                *Root;
-        ScanStatus = gBS->HandleProtocol (Handles[Idx], &gEfiSimpleFileSystemProtocolGuid, (VOID **)&Fs);
-        if (!EFI_ERROR (ScanStatus)) {
-          ScanStatus = Fs->OpenVolume (Fs, &Root);
-          if (!EFI_ERROR (ScanStatus)) {
-            //
-            // Try to get APFS volume info
-            //
-            APPLE_APFS_VOLUME_INFO  *VolInfo;
-            VolInfo = OcGetFileInfo (Root, &gAppleApfsVolumeInfoGuid, sizeof (*VolInfo), NULL);
-            if (VolInfo != NULL) {
-              DEBUG ((DEBUG_INFO, "DBT: Handle %p APFS role=0x%X hasGG=%d hasSS=%d\n",
-                       Handles[Idx], VolInfo->Role,
-                       IsGoldenGateInstaller (Root),
-                       IsSharedSupportVolume (Root)));
-              FreePool (VolInfo);
-            } else {
-              DEBUG ((DEBUG_INFO, "DBT: Handle %p non-APFS hasGG=%d\n",
-                       Handles[Idx], IsGoldenGateInstaller (Root)));
-            }
-            Root->Close (Root);
-          }
-        }
-      }
-      for (UINTN Idx = 0; Idx < Count; Idx++) {
-        EFI_SIMPLE_FILE_SYSTEM_PROTOCOL  *Fs;
-        EFI_FILE_PROTOCOL                *Root;
-        ScanStatus = gBS->HandleProtocol (Handles[Idx], &gEfiSimpleFileSystemProtocolGuid, (VOID **)&Fs);
-        if (!EFI_ERROR (ScanStatus)) {
-          ScanStatus = Fs->OpenVolume (Fs, &Root);
-          if (!EFI_ERROR (ScanStatus)) {
-            //
-            // Try kernel paths or Golden Gate marker
-            //
-            EFI_FILE_PROTOCOL  *KernelFile;
-            STATIC CONST CHAR16  *Paths[] = {
-              L"\\kernelcache.decomp",
-              L"\\kernelcache.release",
-              L"\\kernel",
-              L"\\com_apple_MobileAsset_MacSoftwareUpdate\\AssetData\\boot\\kernelcache.release.mac15j",
-              L"\\com_apple_MobileAsset_MacSoftwareUpdate\\AssetData\\boot\\kernelcache.release.mac16j",
-              NULL
-            };
-            for (UINTN Pi = 0; Paths[Pi] != NULL; Pi++) {
-              ScanStatus = Root->Open (Root, &KernelFile, (CHAR16 *)Paths[Pi], EFI_FILE_MODE_READ, 0);
-              if (!EFI_ERROR (ScanStatus)) {
-                KernelFile->Close (KernelFile);
-                gInstallerDevice = Handles[Idx];
-                DbtSetBootInfo (gDbtContext, Handles[Idx], Paths[Pi]);
-                DEBUG ((DEBUG_INFO, "DBT: Fallback found kernel at %s\n", Paths[Pi]));
-                break;
-              }
-            }
-
-            if (DbtGetInstallerDevice (gDbtContext) == NULL && IsGoldenGateInstaller (Root)) {
-              gInstallerDevice = Handles[Idx];
-              //
-              // Search all handles for SharedSupport
-              //
-              for (UINTN Ji = 0; Ji < Count; Ji++) {
-                if (Ji == Idx) continue;
-                EFI_SIMPLE_FILE_SYSTEM_PROTOCOL  *Fs2;
-                EFI_FILE_PROTOCOL                *SRoot;
-                ScanStatus = gBS->HandleProtocol (Handles[Ji], &gEfiSimpleFileSystemProtocolGuid, (VOID **)&Fs2);
-                if (!EFI_ERROR (ScanStatus)) {
-                  ScanStatus = Fs2->OpenVolume (Fs2, &SRoot);
-                  if (!EFI_ERROR (ScanStatus)) {
-                    if (IsSharedSupportVolume (SRoot)) {
-                      gInstallerDevice = Handles[Ji];
-                      DbtSetBootInfo (gDbtContext, Handles[Ji], L"\\kernel");
-                      DEBUG ((DEBUG_INFO, "DBT: Fallback found SharedSupport, kernel path \\kernel\n"));
-                      SRoot->Close (SRoot);
-                      SRoot = NULL;
-                      break;
-                    }
-                    SRoot->Close (SRoot);
-                  }
-                }
-              }
-              if (DbtGetInstallerDevice (gDbtContext) == NULL) {
-                DEBUG ((DEBUG_WARN, "DBT: .IAPhysicalMedia found but SharedSupport volume NOT MOUNTED\n"));
-                DEBUG ((DEBUG_WARN, "DBT: Kernel is on unmounted APFS subvolume — cannot boot directly\n"));
-                DbtSetBootInfo (gDbtContext, gInstallerDevice, L"\\SharedSupport\\kernel");
-              }
-            }
-            Root->Close (Root);
-          }
-        }
-        if (DbtGetInstallerDevice (gDbtContext) != NULL) {
-          break;
-        }
-      }
-      FreePool (Handles);
+    KernelDevice = FindInstallerKernelDevice (NULL, KernelPathBuf, sizeof (KernelPathBuf));
+    if (KernelDevice != NULL) {
+      gInstallerDevice = KernelDevice;
+      DbtSetBootInfo (gDbtContext, KernelDevice, KernelPathBuf);
+      DEBUG ((DEBUG_INFO, "DBT: Fallback found kernel at %s\n", KernelPathBuf));
+    } else {
+      DEBUG ((DEBUG_WARN, "DBT: No installer kernel found on any volume\n"));
     }
   }
 
@@ -2159,7 +2194,6 @@ OcGetDbtBootEntries (
   UINTN                            FileInfoSize;
   UINTN                            EntryCount;
   OC_PICKER_ENTRY                  *NewEntries;
-  UINTN                            Index;
   BOOLEAN                          IsMacSoftwareUpdate = FALSE;
 
   ASSERT (PickerContext != NULL);
@@ -2327,123 +2361,19 @@ OcGetDbtBootEntries (
   }
 
   //
-  // Look for macOS 27+ kernel/kernelcache in SharedSupport
+  // Look for macOS 27+ kernel/kernelcache in the installer or SharedSupport
+  // volume. Classic layouts and MobileAsset layouts are probed, and the
+  // kernelcache name is matched dynamically, so board specific names are not
+  // hardcoded here.
   //
   if (EntryCount == 0) {
-    STATIC CONST CHAR16  *KernelPaths[] = {
-      L"\\kernelcache.decomp",
-      L"\\kernelcache.release",
-      L"\\kernel",
-      L"\\SharedSupport\\kernel",
-      L"\\System\\Library\\Kernels\\kernel",
-      L"\\com_apple_MobileAsset_MacSoftwareUpdate\\AssetData\\boot\\kernelcache.release.mac15j",
-      L"\\com_apple_MobileAsset_MacSoftwareUpdate\\AssetData\\boot\\kernelcache.release.mac16j",
-      L"\\AssetData\\boot\\kernelcache.release.mac15j",
-      L"\\AssetData\\boot\\kernelcache.release.mac16j",
-      NULL
-    };
+    CHAR16  KernelPathBuf[256];
 
-    for (Index = 0; KernelPaths[Index] != NULL; Index++) {
-      DEBUG ((DEBUG_INFO, "DBT: Looking for kernel at %s\n", KernelPaths[Index]));
-      Status = RootDirectory->Open (
-                              RootDirectory,
-                              &BootDirectory,
-                              (CHAR16 *)KernelPaths[Index],
-                              EFI_FILE_MODE_READ,
-                              0
-                              );
-
-      if (!EFI_ERROR (Status)) {
-        FileInfoSize = 0;
-        BootDirectory->GetInfo (BootDirectory, &gEfiFileInfoGuid, &FileInfoSize, NULL);
-        if (FileInfoSize > 0) {
-          FileInfo = AllocatePool (FileInfoSize);
-          if (FileInfo != NULL) {
-            BootDirectory->GetInfo (BootDirectory, &gEfiFileInfoGuid, &FileInfoSize, FileInfo);
-            if ((FileInfo->Attribute & EFI_FILE_DIRECTORY) == 0) {
-              DEBUG ((DEBUG_INFO, "DBT: Found kernel at %s, EntryCount++\n", KernelPaths[Index]));
-              ++EntryCount;
-              IsMacSoftwareUpdate = TRUE;
-            }
-            FreePool (FileInfo);
-          }
-        }
-        BootDirectory->Close (BootDirectory);
-        if (EntryCount > 0) {
-          break;
-        }
-      }
-    }
-  }
-
-  //
-  // Also scan SharedSupport AssetData/boot dir for kernelcache files
-  //
-  if (EntryCount == 0) {
-    STATIC CONST CHAR16  *KernelDirs[] = {
-      L"\\com_apple_MobileAsset_MacSoftwareUpdate\\AssetData\\boot",
-      L"\\AssetData\\boot",
-      NULL
-    };
-
-    for (Index = 0; KernelDirs[Index] != NULL; Index++) {
-      Status = RootDirectory->Open (
-                              RootDirectory,
-                              &BootDirectory,
-                              (CHAR16 *)KernelDirs[Index],
-                              EFI_FILE_MODE_READ,
-                              0
-                              );
-      if (!EFI_ERROR (Status)) {
-        //
-        // Enumerate files in this directory looking for kernelcache.*
-        //
-        FileInfoSize = 0;
-        BootDirectory->GetInfo (BootDirectory, &gEfiFileInfoGuid, &FileInfoSize, NULL);
-        if (FileInfoSize > 0) {
-          // Check if it's actually a directory
-          FileInfo = AllocatePool (FileInfoSize);
-          if (FileInfo != NULL) {
-            BootDirectory->GetInfo (BootDirectory, &gEfiFileInfoGuid, &FileInfoSize, FileInfo);
-            if ((FileInfo->Attribute & EFI_FILE_DIRECTORY) != 0) {
-              UINTN   DirBufSize = SIZE_256KB;
-              VOID    *DirBuf = AllocatePool (DirBufSize);
-              if (DirBuf != NULL) {
-                while (TRUE) {
-                  UINTN  ReadSize = DirBufSize;
-                  Status = BootDirectory->Read (BootDirectory, &ReadSize, DirBuf);
-                  if (EFI_ERROR (Status) || ReadSize == 0) {
-                    break;
-                  }
-                  EFI_FILE_INFO  *DirEntry = (EFI_FILE_INFO *)DirBuf;
-                  while ((UINTN)DirEntry < (UINTN)DirBuf + ReadSize) {
-                    if ((DirEntry->Attribute & EFI_FILE_DIRECTORY) == 0
-                        && StrnCmp (DirEntry->FileName, L"kernelcache.", 12) == 0) {
-                      DEBUG ((DEBUG_INFO, "DBT: Found kernelcache: %s\n", DirEntry->FileName));
-                      EntryCount = 1;
-                      IsMacSoftwareUpdate = TRUE;
-                      break;
-                    }
-                    if (DirEntry->Size == 0) {
-                      break;
-                    }
-                    DirEntry = (EFI_FILE_INFO *)((UINT8 *)DirEntry + DirEntry->Size);
-                  }
-                  if (EntryCount > 0) {
-                    break;
-                  }
-                }
-                FreePool (DirBuf);
-              }
-            }
-            FreePool (FileInfo);
-          }
-        }
-        BootDirectory->Close (BootDirectory);
-        if (EntryCount > 0) {
-          break;
-        }
-      }
+    DEBUG ((DEBUG_INFO, "DBT: Probing installer volumes for kernel/kernelcache\n"));
+    if (FindInstallerKernel (RootDirectory, KernelPathBuf, sizeof (KernelPathBuf))) {
+      DEBUG ((DEBUG_INFO, "DBT: Found installer kernel at %s\n", KernelPathBuf));
+      ++EntryCount;
+      IsMacSoftwareUpdate = TRUE;
     }
   }
 
@@ -2451,131 +2381,14 @@ OcGetDbtBootEntries (
 
   if (EntryCount == 0) {
     //
-    // macOS 27 Golden Gate: Check for .IAPhysicalMedia marker
+    // macOS 27 Golden Gate: the installer keeps an ARM64 boot.efi, which an
+    // x86_64 firmware cannot load through LoadImage.  Create the translated
+    // entry; the DBT boot action discovers the kernel later.
     //
-    if (IsGoldenGateInstaller (RootDirectory)) {
-      DEBUG ((DEBUG_INFO, "DBT: Found .IAPhysicalMedia marker - macOS 27 Golden Gate installer detected\n"));
-      DEBUG ((DEBUG_INFO, "DBT: Checking for mounted SharedSupport volume...\n"));
-
-      EFI_HANDLE  *HandleBuffer;
-      UINTN       HandleCount;
-      EFI_SIMPLE_FILE_SYSTEM_PROTOCOL  *FsProtocol;
-      EFI_FILE_PROTOCOL                *SharedRoot;
-
-      Status = gBS->LocateHandleBuffer (
-                       ByProtocol,
-                       &gEfiSimpleFileSystemProtocolGuid,
-                       NULL,
-                       &HandleCount,
-                       &HandleBuffer
-                       );
-
-      if (!EFI_ERROR (Status) && HandleCount > 0) {
-        for (UINTN Idx = 0; Idx < HandleCount; Idx++) {
-          if (HandleBuffer[Idx] == Device) {
-            continue;
-          }
-
-          Status = gBS->HandleProtocol (
-                       HandleBuffer[Idx],
-                       &gEfiSimpleFileSystemProtocolGuid,
-                       (VOID **)&FsProtocol
-                       );
-
-          if (!EFI_ERROR (Status)) {
-            Status = FsProtocol->OpenVolume (FsProtocol, &SharedRoot);
-            if (!EFI_ERROR (Status)) {
-              if (IsSharedSupportVolume (SharedRoot)) {
-                DEBUG ((DEBUG_INFO, "DBT: Found mounted SharedSupport volume for Golden Gate installer\n"));
-                gInstallerDevice = HandleBuffer[Idx];
-                EntryCount = 1;
-                IsMacSoftwareUpdate = TRUE;
-                SharedRoot->Close (SharedRoot);
-                break;
-              }
-              SharedRoot->Close (SharedRoot);
-            }
-          }
-        }
-      }
-
-      if (HandleBuffer != NULL) {
-        FreePool (HandleBuffer);
-      }
-    }
-  }
-
-  //
-  // Fallback: if boot.efi exists and is ARM64, create DBT entry anyway.
-  // DirectLoadKernel will search for kernel at boot time.
-  //
-  if (EntryCount == 0) {
-    EFI_FILE_PROTOCOL  *BootEfi;
-    Status = RootDirectory->Open (
-                             RootDirectory,
-                             &BootEfi,
-                             L"\\System\\Library\\CoreServices\\boot.efi",
-                             EFI_FILE_MODE_READ,
-                             0
-                             );
-    if (!EFI_ERROR (Status)) {
-      UINT8  Header[128];
-      UINTN  ReadSize = sizeof (Header);
-      Status = BootEfi->Read (BootEfi, &ReadSize, Header);
-      if (!EFI_ERROR (Status) && ReadSize >= 64) {
-        if (*(UINT16 *)Header == 0x5A4D) {
-          UINT32  PeOffset = *(UINT32 *)(Header + 0x3C);
-          if ((PeOffset + 8) < ReadSize) {
-            if (*(UINT32 *)(Header + PeOffset) == 0x00004550) {
-              UINT16  Machine = *(UINT16 *)(Header + PeOffset + 4);
-              if (Machine == 0xAA64) {
-                DEBUG ((DEBUG_INFO, "DBT: ARM64 boot.efi detected, searching SharedSupport for kernel\n"));
-                gInstallerDevice = Device;
-                //
-                // Search for SharedSupport volume with kernel
-                //
-                {
-                  EFI_HANDLE  *Hb;
-                  UINTN       Hc;
-                  Status = gBS->LocateHandleBuffer (
-                                  ByProtocol,
-                                  &gEfiSimpleFileSystemProtocolGuid,
-                                  NULL,
-                                  &Hc,
-                                  &Hb
-                                  );
-                  if (!EFI_ERROR (Status) && Hc > 0) {
-                    for (UINTN Idx = 0; Idx < Hc; Idx++) {
-                      if (Hb[Idx] == Device) {
-                        continue;
-                      }
-                      EFI_SIMPLE_FILE_SYSTEM_PROTOCOL  *Fs;
-                      Status = gBS->HandleProtocol (Hb[Idx], &gEfiSimpleFileSystemProtocolGuid, (VOID **)&Fs);
-                      if (!EFI_ERROR (Status)) {
-                        EFI_FILE_PROTOCOL  *SRoot;
-                        Status = Fs->OpenVolume (Fs, &SRoot);
-                        if (!EFI_ERROR (Status)) {
-                          if (IsSharedSupportVolume (SRoot)) {
-                            gInstallerDevice = Hb[Idx];
-                            DEBUG ((DEBUG_INFO, "DBT: Found SharedSupport volume for ARM64 installer\n"));
-                            SRoot->Close (SRoot);
-                            break;
-                          }
-                          SRoot->Close (SRoot);
-                        }
-                      }
-                    }
-                    FreePool (Hb);
-                  }
-                }
-                EntryCount = 1;
-                IsMacSoftwareUpdate = TRUE;
-              }
-            }
-          }
-        }
-      }
-      BootEfi->Close (BootEfi);
+    if (IsArm64BootEfi (RootDirectory)) {
+      DEBUG ((DEBUG_INFO, "DBT: ARM64 boot.efi found, creating translated installer entry\n"));
+      EntryCount       = 1;
+      IsMacSoftwareUpdate = TRUE;
     }
   }
 
@@ -2598,7 +2411,26 @@ OcGetDbtBootEntries (
     // All DBT entries go through unmanaged boot action to bypass LoadImage
     // since boot.efi/kernel are ARM64 and EDK2 LoadImage will reject them.
     //
-    DbtSetBootInfo (gDbtContext, gInstallerDevice != NULL ? gInstallerDevice : Device, L"\\kernel");
+    {
+      CHAR16      KernelPathBuf[256];
+      EFI_HANDLE  KernelDevice;
+
+      //
+      // Resolve the volume that actually holds the installer kernel (it may
+      // be a separate SharedSupport volume on recent installers) and bind it
+      // to the translated boot.
+      //
+      KernelDevice = FindInstallerKernelDevice (gInstallerDevice != NULL ? gInstallerDevice : Device,
+                                                 KernelPathBuf,
+                                                 sizeof (KernelPathBuf));
+      if (KernelDevice != NULL) {
+        gInstallerDevice = KernelDevice;
+        DbtSetBootInfo (gDbtContext, KernelDevice, KernelPathBuf);
+        DEBUG ((DEBUG_INFO, "DBT: Installer kernel resolved at %s\n", KernelPathBuf));
+      } else {
+        DbtSetBootInfo (gDbtContext, gInstallerDevice != NULL ? gInstallerDevice : Device, L"\\kernel");
+      }
+    }
     NewEntries[0].UnmanagedBootAction             = DbtBootEntryAction;
     NewEntries[0].UnmanagedBootGetFinalDevicePath = NULL;
     //
