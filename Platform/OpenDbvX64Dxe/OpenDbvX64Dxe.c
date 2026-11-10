@@ -1166,6 +1166,7 @@ Inst = *(UINT32 *)(Seg + J + 8);
 //     point. Apple's boot.efi hands xnu the boot args pointer in %rsi; the
 //     stub also places it in %rdi and %rdx so every caller convention works.
 //
+#if defined(__x86_64__) || defined(_M_X64)
 typedef struct {
   UINT64  *Pml4;
 } DBT_X86_PAGE_TABLE;
@@ -1558,6 +1559,7 @@ X86JumpKernel (
 #endif
 
 #endif // defined(__x86_64__) || defined(_M_X64)
+#endif // defined(__x86_64__) || defined(_M_X64) — X86 helpers
 
 STATIC
 EFI_STATUS
