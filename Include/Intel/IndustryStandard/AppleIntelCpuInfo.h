@@ -11,4 +11,4 @@ typedef VOID (EFIAPI *EFI_AP_PROCEDURE)(IN OUT VOID *Buffer);
 typedef EFI_AP_PROCEDURE EFI_MP_SERVICES_STARTUP_ALL_APS;
 typedef EFI_AP_PROCEDURE EFI_MP_SERVICES_STARTUP_THIS_AP;
 
-#include <Apple/IndustryStandard/AppleIntelCpuInfo.h>
+#include <IndustryStandard/AppleIntelCpuInfo.h>

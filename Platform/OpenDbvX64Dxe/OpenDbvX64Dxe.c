@@ -48,6 +48,7 @@
 
 STATIC DBT_CONTEXT  *gDbtContext     = NULL;
 STATIC EFI_HANDLE   gInstallerDevice = NULL;
+STATIC EFI_HANDLE   gX86ImageHandle  = NULL;
 
 //
 // Force the OpenCore log protocol to maximum verbosity on both the console
@@ -1144,6 +1145,372 @@ Inst = *(UINT32 *)(Seg + J + 8);
   return CpuData;
 }
 
+//
+// --------------------------- x86_64 direct kernel boot ---------------------------
+//
+// The macOS "Golden Gate" (27.x) restore FileSystem volumes carry a PRELINKED
+// x86_64 kernel cache at \System\Library\Kernels\kernel (Mach-O with
+// __PRELINK_TEXT/__PRELINK_INFO segments, filetype=2). On an x86_64 host this
+// kernel boots natively without Apple's boot.efi:
+//
+//  1. re-host the kernel image below 4 GB (BootArgs2.kaddr is UINT32),
+//  2. build fresh x86_64 page tables that identity-map every memory-map
+//     range (so UEFI runtime structures and the handoff stack stay valid) and
+//     map each Mach-O LC_SEGMENT_64 VA range to its host physical address
+//     (slide 0 — the kernel runs at its linked addresses),
+//  3. build a BootArgs2 structure with the EFI memory map, the framebuffer,
+//     PCI ECAM and the kernel cache header virtual address,
+//  4. provide a < 4 GB copy of the EFI System Table + Runtime Services
+//     (BootArgs2.efiSystemTable is UINT32 on x86),
+//  5. ExitBootServices(), then jump straight to the LC_UNIXTHREAD entry
+//     point. Apple's boot.efi hands xnu the boot args pointer in %rsi; the
+//     stub also places it in %rdi and %rdx so every caller convention works.
+//
+typedef struct {
+  UINT64  *Pml4;
+} DBT_X86_PAGE_TABLE;
+
+#define DBT_X86_PTE_PRESENT  0x01
+#define DBT_X86_PTE_WRITABLE 0x02
+
+//
+// Allocate (or reuse) the next page-table level pointed to by *Slot.
+// Returns the table, or NULL on allocation failure.
+//
+STATIC
+UINT64 *
+X86PtNextLevel (
+  DBT_X86_PAGE_TABLE  *PageTable,
+  UINT64              *Slot
+  )
+{
+  UINT64               *Table;
+  EFI_STATUS            Status;
+  EFI_PHYSICAL_ADDRESS  Addr;
+
+  Table = (UINT64 *)(UINTN)(*Slot & 0xFFFFFFFFFFFFF000ULL);
+  if (Table != NULL) {
+    return Table;
+  }
+
+  Status = gBS->AllocatePages (AllocateAnyPages, EfiReservedMemoryType, 1, &Addr);
+  if (EFI_ERROR (Status)) {
+    return NULL;
+  }
+
+  Table = (UINT64 *)(UINTN)Addr;
+  ZeroMem (Table, EFI_PAGE_SIZE);
+  *Slot = (UINT64)(UINTN)Table | DBT_X86_PTE_PRESENT | DBT_X86_PTE_WRITABLE;
+  return Table;
+}
+
+//
+// Identity/mapped page: 4 KB page via PML4/PDPT/PD/PT.
+//
+STATIC
+BOOLEAN
+X86PtMap4K (
+  DBT_X86_PAGE_TABLE  *PageTable,
+  UINT64              Virtual,
+  UINT64              Physical
+  )
+{
+  UINT64  *Pdpt;
+  UINT64  *Pd;
+  UINT64  *Pt;
+
+  Pdpt = X86PtNextLevel (PageTable, &PageTable->Pml4[(Virtual >> 39) & 0x1FF]);
+  if (Pdpt == NULL) {
+    return FALSE;
+  }
+
+  Pd = X86PtNextLevel (PageTable, &Pdpt[(Virtual >> 30) & 0x1FF]);
+  if (Pd == NULL) {
+    return FALSE;
+  }
+
+  Pt = X86PtNextLevel (PageTable, &Pd[(Virtual >> 21) & 0x1FF]);
+  if (Pt == NULL) {
+    return FALSE;
+  }
+
+  Pt[(Virtual >> 12) & 0x1FF] = (Physical & 0x000FFFFFFFFFF000ULL) |
+    DBT_X86_PTE_PRESENT | DBT_X86_PTE_WRITABLE;
+  return TRUE;
+}
+
+//
+// 2 MB page (PS set) — used for identity mapping physical RAM.
+//
+STATIC
+BOOLEAN
+X86PtMap2M (
+  DBT_X86_PAGE_TABLE  *PageTable,
+  UINT64              Virtual,
+  UINT64              Physical
+  )
+{
+  UINT64  *Pdpt;
+  UINT64  *Pd;
+  UINT64  Slot;
+  UINTN   Index;
+
+  Pdpt = X86PtNextLevel (PageTable, &PageTable->Pml4[(Virtual >> 39) & 0x1FF]);
+  if (Pdpt == NULL) {
+    return FALSE;
+  }
+
+  Pd = X86PtNextLevel (PageTable, &Pdpt[(Virtual >> 30) & 0x1FF]);
+  if (Pd == NULL) {
+    return FALSE;
+  }
+
+  Index = (Virtual >> 21) & 0x1FF;
+  Slot  = Pd[Index];
+
+  //
+  // Never split an existing 4 KB leaf table into a 2 MB page — if the slot
+  // already points at a PT (allocated by Map4K, e.g. for the kernel image),
+  // route this call through a 4 KB walk instead.
+  //
+  if ((Slot & (0x80 | 0xFFFFFFFFFFFFF000ULL)) != 0 &&
+      !(Slot & 0x80))
+  {
+    for (Index = 0; Index < 512; ++Index) {
+      UINT64  Pa = (Physical & ~(0x1FFFFFULL)) + Index * 0x1000ULL;
+      if (!X86PtMap4K (PageTable, Virtual + Index * 0x1000ULL, Pa)) {
+        return FALSE;
+      }
+    }
+    return TRUE;
+  }
+
+  Pd[Index] = (Physical & ~(UINT64)0x1FFFFFULL) |
+    DBT_X86_PTE_PRESENT | DBT_X86_PTE_WRITABLE | 0x80 /* PS */;
+  return TRUE;
+}
+
+//
+// Identity-map [Base, End) with 2 MB pages (rounded outwards).
+//
+STATIC
+BOOLEAN
+X86PtIdentityRange (
+  DBT_X86_PAGE_TABLE  *PageTable,
+  UINT64              Base,
+  UINT64              End
+  )
+{
+  Base &= ~((UINT64)0x1FFFFF);
+  End   = (End + 0x1FFFFF) & ~((UINT64)0x1FFFFF);
+
+  while (Base < End) {
+    if (!X86PtMap2M (PageTable, Base, Base)) {
+      return FALSE;
+    }
+    Base += 0x200000ULL;
+  }
+  return TRUE;
+}
+
+//
+// Allocate `Pages` pages strictly below 4 GB (BootArgs2 fields are UINT32).
+//
+STATIC
+EFI_STATUS
+X86AllocLow (
+  IN  UINTN   Pages,
+  OUT UINT8   **Out
+  )
+{
+  EFI_STATUS            Status;
+  EFI_PHYSICAL_ADDRESS  Addr;
+
+  Addr   = 0x100000000ULL;   /* 4 GB */
+  Status = gBS->AllocatePages (AllocateMaxAddress, EfiLoaderData, Pages, &Addr);
+  if (EFI_ERROR (Status)) {
+    return Status;
+  }
+
+  *Out = (UINT8 *)(UINTN)Addr;
+  return EFI_SUCCESS;
+}
+
+//
+// Copy the EFI System Table (+ Runtime Services + configuration table
+// array) into a reserved < 4 GB block so that BootArgs2.efiSystemTable
+// (UINT32) stays addressable from xnu. Internal pointers point at the
+// copies; the boot services + console pointers are cleared as they are
+// meaningless after ExitBootServices.
+//
+STATIC
+EFI_STATUS
+X86CopyEfiSystemTable (
+  OUT UINT64  *TablePhys
+  )
+{
+  EFI_STATUS            Status;
+  EFI_PHYSICAL_ADDRESS  Addr;
+  UINTN                 BlockSize;
+  UINTN                 Pages;
+  EFI_SYSTEM_TABLE      *St;
+  EFI_RUNTIME_SERVICES  *Rs;
+  EFI_CONFIGURATION_TABLE *Table;
+
+  BlockSize = sizeof (EFI_SYSTEM_TABLE) + sizeof (EFI_RUNTIME_SERVICES) +
+              gST->NumberOfTableEntries * sizeof (EFI_CONFIGURATION_TABLE) +
+              EFI_PAGE_SIZE;
+  Pages = EFI_SIZE_TO_PAGES (BlockSize);
+
+  Addr   = 0x100000000ULL;
+  Status = gBS->AllocatePages (AllocateMaxAddress, EfiReservedMemoryType, Pages, &Addr);
+  if (EFI_ERROR (Status)) {
+    return Status;
+  }
+
+  St = (EFI_SYSTEM_TABLE *)(UINTN)Addr;
+  CopyMem (St, gST, sizeof (EFI_SYSTEM_TABLE));
+
+  Rs              = (EFI_RUNTIME_SERVICES *)((UINT8 *)St + sizeof (EFI_SYSTEM_TABLE));
+  CopyMem (Rs, gST->RuntimeServices, sizeof (EFI_RUNTIME_SERVICES));
+  St->RuntimeServices = Rs;
+  St->BootServices    = NULL;
+
+  Table = (EFI_CONFIGURATION_TABLE *)((UINT8 *)Rs + sizeof (EFI_RUNTIME_SERVICES));
+  CopyMem (Table, gST->ConfigurationTable,
+           gST->NumberOfTableEntries * sizeof (EFI_CONFIGURATION_TABLE));
+  St->ConfigurationTable = Table;
+
+  St->ConsoleInHandle  = NULL;
+  St->ConIn            = NULL;
+  St->ConsoleOutHandle = NULL;
+  St->ConOut           = NULL;
+  St->StandardErrorHandle = NULL;
+  St->StdErr           = NULL;
+
+  *TablePhys = (UINT64)(UINTN)Addr;
+  return EFI_SUCCESS;
+}
+
+//
+// Capture the current EFI memory map into a reserved, page-aligned,
+// < 4 GB buffer. Returns the buffer and the descriptor geometry. The map is
+// what xnu uses to learn about available memory (BootArgs2.MemoryMap is
+// UINT32 physical).
+//
+STATIC
+EFI_STATUS
+X86CaptureMemoryMap (
+  OUT UINT8   **MapBuffer,
+  OUT UINTN   *MapSize,
+  OUT UINTN   *DescriptorSize,
+  OUT UINTN   *DescriptorVersion,
+  OUT UINT64  *PhysicalMemorySize
+  )
+{
+  EFI_STATUS            Status;
+  EFI_PHYSICAL_ADDRESS  Addr;
+  UINTN                 Size;
+  UINTN                 DescSize;
+  UINT32                DescVersion;
+  UINTN                 Key;
+  UINTN                 Attempt;
+
+  *MapBuffer = NULL;
+  Size       = 0;
+  DescSize   = 0;
+  DescVersion = 0;
+
+  for (Attempt = 0; Attempt < 8; ++Attempt) {
+    UINT8   *Buffer;
+    UINTN   Pages;
+
+    Size = 0;
+    Status = gBS->GetMemoryMap (&Size, NULL, &Key, &DescSize, &DescVersion);
+    if (Status != EFI_BUFFER_TOO_SMALL) {
+      return EFI_ERROR (Status) ? Status : EFI_NOT_FOUND;
+    }
+
+    if (DescSize == 0) {
+      DescSize = sizeof (EFI_MEMORY_DESCRIPTOR);
+    }
+
+    Size += 4 * DescSize;   /* slack for allocations that happen meanwhile */
+    Pages = EFI_SIZE_TO_PAGES (Size);
+
+    Addr   = 0x100000000ULL;
+    Status = gBS->AllocatePages (AllocateMaxAddress, EfiReservedMemoryType, Pages, &Addr);
+    if (EFI_ERROR (Status)) {
+      return Status;
+    }
+
+    Buffer = (UINT8 *)(UINTN)Addr;
+    Size   = EFI_PAGES_TO_SIZE (Pages);
+
+    Status = gBS->GetMemoryMap (&Size, (EFI_MEMORY_DESCRIPTOR *)Buffer, &Key, &DescSize, &DescVersion);
+    if (!EFI_ERROR (Status)) {
+      UINTN                 Offset;
+      EFI_MEMORY_DESCRIPTOR *Desc;
+
+      *MapBuffer         = Buffer;
+      *MapSize           = Size;
+      *DescriptorSize    = DescSize;
+      *DescriptorVersion = DescVersion;
+
+      //
+      // Total usable RAM: highest end of conventional memory.
+      //
+      *PhysicalMemorySize = 0;
+      for (Offset = 0; Offset < Size; Offset += DescSize) {
+        Desc = (EFI_MEMORY_DESCRIPTOR *)(Buffer + Offset);
+        if (Desc->Type == EfiConventionalMemory) {
+          UINT64  End = Desc->PhysicalStart + (UINT64)Desc->NumberOfPages * 4096ULL;
+          if (End > *PhysicalMemorySize) {
+            *PhysicalMemorySize = End;
+          }
+        }
+      }
+
+      return EFI_SUCCESS;
+    }
+
+    gBS->FreePages (Addr, Pages);
+  }
+
+  return EFI_OUT_OF_RESOURCES;
+}
+
+//
+// Final handoff: switch page tables, disable interrupts, jump to the entry
+// point. The boot args pointer is passed in %rsi (expected by osfmk/i386
+// start.s after the same call boot.efi makes) and mirrored in %rdi and %rdx.
+// This function never returns.
+//
+STATIC
+VOID
+EFIAPI
+X86JumpKernel (
+  IN UINT64  Cr3,
+  IN UINT64  EntryPoint,
+  IN UINT64  BootArgsPhys
+  )
+{
+  asm volatile (
+    "cli\n\t"
+    "movq %%rcx, %%cr3\n\t"
+    "jmpq *%%rax\n\t"
+    : /* no outputs */
+    : "c" (Cr3), "a" (EntryPoint), "D" (BootArgsPhys), "S" (BootArgsPhys),
+      "d" (BootArgsPhys)
+    : "memory"
+  );
+
+  //
+  // A well-behaved kernel never returns.
+  //
+  CpuDeadLoop ();
+}
+
 STATIC
 EFI_STATUS
 DirectLoadKernel (
@@ -2122,16 +2489,400 @@ SKIP_READ_APPLE_KERNEL:
     return EFI_DEVICE_ERROR;
   } else if (!IsArm64) {
     //
-    // x86_64 kernel - directly call entry point
+    // x86_64 kernel — native direct boot on the x64 host.
     //
-    DEBUG ((DEBUG_INFO, "DirectKernel: x86_64 kernel execution not fully implemented\n"));
-    FreePool (StackBuffer);
+    // The kernel cache is PRELINKED (has __PRELINK_INFO), so no kext injection
+    // is needed. We re-host the image below 4 GB, build fresh page tables
+    // (identity RAM + segment VAs at slide 0), fill BootArgs2 with the EFI
+    // memory map and a < 4 GB EFI System Table copy, ExitBootServices and
+    // jump to the LC_UNIXTHREAD entry point with the boot args pointer in
+    // %rsi/%rdi/%rdx.
+    //
+    UINT64                 KernelPhys;
+    UINT8                  *NewBuffer;
+    UINT8                  *NewDt;
+    UINT8                  *BssBuffer;
+    UINT64                 BssTotal;
+    UINT64                 BssCursor;
+    UINT64                 VaBase;
+    UINT64                 VaEnd;
+    UINT64                 Cr3;
+    UINT64                 TablePhys;
+    UINT64                 DtPhys;
+    UINTN                  TablesPages;
+    UINT8                  *MemMapBuffer;
+    UINTN                  MemMapSize;
+    UINTN                  MemMapDescSize;
+    UINTN                  MemMapDescVersion;
+    UINT64                 PhysicalMemorySize;
+    UINT64                 SegFileSz[32];
+    MACH_HEADER_64         *KHeader;
+    MACH_LOAD_COMMAND      *KCmd;
+    MACH_LOAD_COMMAND      *KCmdEnd;
+    UINTN                  KIdx;
+    UINTN                  SegIdx;
+    UINTN                  PageIdx;
+    UINTN                  MapIdx;
+    UINTN                  Attempt;
+    EFI_STATUS             ExitStatus;
+    UINTN                  MapKey;
+    DBT_X86_PAGE_TABLE     PageTable;
+
+    KernelPhys   = 0;
+    NewBuffer    = NULL;
+    NewDt        = NULL;
+    BssBuffer    = NULL;
+    BssTotal     = 0;
+    BssCursor    = 0;
+    VaBase       = 0;
+    VaEnd        = 0;
+    Cr3          = 0;
+    TablePhys    = 0;
+    DtPhys       = 0;
+    TablesPages  = 0;
+    MemMapBuffer = NULL;
+    MemMapSize   = 0;
+    MemMapDescSize = 0;
+    MemMapDescVersion = 0;
+    PhysicalMemorySize = 0;
+    ZeroMem (SegFileSz, sizeof (SegFileSz));
+
+    //
+    // Walk the load commands: fill the segment table (VA / mem size /
+    // file offset / file size) and compute the linked VA span plus the
+    // total BSS slack (mem size beyond file size).
+    //
+    KHeader = (MACH_HEADER_64 *)KernelBuffer;
+    KCmd    = (MACH_LOAD_COMMAND *)((UINTN)KHeader + sizeof (MACH_HEADER_64));
+    KCmdEnd = (MACH_LOAD_COMMAND *)((UINTN)KCmd + KHeader->CommandsSize);
+    VaBase  = ~((UINT64)0);
+    VaEnd   = 0;
+
+    DEBUG ((DEBUG_INFO, "DirectKernel: x86_64 kernel cputype=%u ncmds=%u\n",
+            (UINT32)KHeader->CpuType, (UINT32)KHeader->NumCommands));
+
+    for (KIdx = 0; KIdx < KHeader->NumCommands && KCmd < KCmdEnd; ++KIdx) {
+      if (KCmd->CommandType == MACH_LOAD_COMMAND_SEGMENT_64) {
+        MACH_SEGMENT_COMMAND_64  *Seg = (MACH_SEGMENT_COMMAND_64 *)KCmd;
+
+        if (SegCount < ARRAY_SIZE (SegVmAddr)) {
+          SegVmAddr[SegCount]  = Seg->VirtualAddress;
+          SegVmSize[SegCount]  = Seg->Size;
+          SegFileOff[SegCount] = Seg->FileOffset;
+          SegFileSz[SegCount]  = Seg->FileSize;
+
+          if (Seg->Size > Seg->FileSize) {
+            BssTotal += Seg->Size - Seg->FileSize;
+          }
+
+          if (Seg->Size > 0) {
+            if (Seg->VirtualAddress < VaBase) {
+              VaBase = Seg->VirtualAddress;
+            }
+            if (Seg->VirtualAddress + Seg->Size > VaEnd) {
+              VaEnd = Seg->VirtualAddress + Seg->Size;
+            }
+          }
+
+          DEBUG ((DEBUG_VERBOSE, "DirectKernel: x86 seg[%u] va=0x%llx sz=0x%llx off=0x%llx fsz=0x%llx\n",
+                  SegCount, Seg->VirtualAddress, Seg->Size, Seg->FileOffset, Seg->FileSize));
+          SegCount++;
+        } else {
+          DEBUG ((DEBUG_WARN, "DirectKernel: x86 segment table full, ignoring\n"));
+        }
+      }
+      KCmd = (MACH_LOAD_COMMAND *)((UINTN)KCmd + KCmd->CommandSize);
+    }
+
+    if (SegCount == 0 || VaBase >= VaEnd) {
+      DEBUG ((DEBUG_ERROR, "DirectKernel: no usable LC_SEGMENT_64 table\n"));
+      FreePool (StackBuffer);
+      FreePool (BootArgs);
+      FreePool (KernelBuffer);
+      return EFI_INVALID_PARAMETER;
+    }
+
+    DEBUG ((DEBUG_INFO, "DirectKernel: x86 %u segments va=[0x%llx..0x%llx) bss=0x%llx\n",
+            SegCount, VaBase, VaEnd, BssTotal));
+
+    //
+    // Re-host the kernel image below 4 GB, page aligned. BootArgs2.kaddr is
+    // UINT32 on x86.
+    //
+    ExitStatus = X86AllocLow (EFI_SIZE_TO_PAGES ((UINTN)KernelSize), &NewBuffer);
+    if (EFI_ERROR (ExitStatus)) {
+      DEBUG ((DEBUG_ERROR, "DirectKernel: cannot re-host kernel below 4GB - %r\n", ExitStatus));
+      FreePool (StackBuffer);
+      FreePool (BootArgs);
+      FreePool (KernelBuffer);
+      return ExitStatus;
+    }
+    CopyMem (NewBuffer, KernelBuffer, (UINTN)KernelSize);
+    FreePool (KernelBuffer);
+    KernelBuffer = NewBuffer;
+    KernelPhys   = (UINT64)(UINTN)KernelBuffer;
+    DEBUG ((DEBUG_INFO, "DirectKernel: kernel re-hosted at 0x%llx (%u bytes)\n", KernelPhys, KernelSize));
+
+    //
+    // Re-host the minimal device tree below 4 GB (BootArgs2.deviceTreeP is
+    // UINT32 and xnu reads the tree by physical address). Note the copy is
+    // performed before the memory-map capture, so the copied range shows up
+    // as resident loader data in the handed-over boot map.
+    //
+    if (DeviceTreeBuffer != NULL && DeviceTreeSize > 0) {
+      ExitStatus = X86AllocLow (EFI_SIZE_TO_PAGES ((UINTN)DeviceTreeSize), &NewDt);
+      if (EFI_ERROR (ExitStatus)) {
+        DEBUG ((DEBUG_WARN, "DirectKernel: device tree re-host failed - %r\n", ExitStatus));
+        NewDt = NULL;
+        DeviceTreeSize = 0;
+      } else {
+        CopyMem (NewDt, DeviceTreeBuffer, (UINTN)DeviceTreeSize);
+        DtPhys = (UINT64)(UINTN)NewDt;
+        DEBUG ((DEBUG_INFO, "DirectKernel: device tree re-hosted at 0x%llx (%u bytes)\n", DtPhys, DeviceTreeSize));
+      }
+    }
+
+    //
+    // Fresh page tables.
+    //
+    ZeroMem (&PageTable, sizeof (PageTable));
+    ExitStatus = gBS->AllocatePages (
+                        AllocateAnyPages,
+                        EfiReservedMemoryType,
+                        1,
+                        (EFI_PHYSICAL_ADDRESS *)&PageTable.Pml4
+                        );
+    if (EFI_ERROR (ExitStatus)) {
+      DEBUG ((DEBUG_ERROR, "DirectKernel: PML4 alloc failed\n"));
+      FreePool (StackBuffer);
+      FreePool (BootArgs);
+      FreePool (KernelBuffer);
+      return ExitStatus;
+    }
+    ZeroMem ((VOID *)(UINTN)PageTable.Pml4, EFI_PAGE_SIZE);
+
+    //
+    // Zeroed backing for every BSS page (mem size beyond file size).
+    //
+    if (BssTotal > 0) {
+      EFI_PHYSICAL_ADDRESS  BssAddr;
+
+      BssAddr = 0x100000000ULL;
+      ExitStatus = gBS->AllocatePages (
+                          AllocateMaxAddress,
+                          EfiReservedMemoryType,
+                          EFI_SIZE_TO_PAGES ((UINTN)BssTotal),
+                          &BssAddr
+                          );
+      if (EFI_ERROR (ExitStatus)) {
+        DEBUG ((DEBUG_ERROR, "DirectKernel: BSS backing alloc failed\n"));
+        gBS->FreePages ((EFI_PHYSICAL_ADDRESS)(UINTN)PageTable.Pml4, 1);
+        FreePool (StackBuffer);
+        FreePool (BootArgs);
+        FreePool (KernelBuffer);
+        return ExitStatus;
+      }
+      BssBuffer = (UINT8 *)(UINTN)BssAddr;
+      ZeroMem (BssBuffer, (UINTN)BssTotal);
+    }
+
+    //
+    // < 4 GB copy of the EFI System Table for BootArgs2.efiSystemTable.
+    //
+    TablesPages = EFI_SIZE_TO_PAGES (
+                    sizeof (EFI_SYSTEM_TABLE) +
+                    sizeof (EFI_RUNTIME_SERVICES) +
+                    gST->NumberOfTableEntries * sizeof (EFI_CONFIGURATION_TABLE) +
+                    EFI_PAGE_SIZE);
+    ExitStatus = X86CopyEfiSystemTable (&TablePhys);
+    if (EFI_ERROR (ExitStatus)) {
+      DEBUG ((DEBUG_ERROR, "DirectKernel: EFI System Table copy failed\n"));
+      if (BssBuffer != NULL) {
+        gBS->FreePages ((EFI_PHYSICAL_ADDRESS)(UINTN)BssBuffer, EFI_SIZE_TO_PAGES ((UINTN)BssTotal));
+      }
+      gBS->FreePages ((EFI_PHYSICAL_ADDRESS)(UINTN)PageTable.Pml4, 1);
+      FreePool (StackBuffer);
+      FreePool (BootArgs);
+      FreePool (KernelBuffer);
+      return ExitStatus;
+    }
+
+    //
+    // Capture the EFI memory map (reserved, < 4 GB, page aligned).
+    //
+    ExitStatus = X86CaptureMemoryMap (
+                   &MemMapBuffer,
+                   &MemMapSize,
+                   &MemMapDescSize,
+                   &MemMapDescVersion,
+                   &PhysicalMemorySize
+                   );
+    if (EFI_ERROR (ExitStatus)) {
+      DEBUG ((DEBUG_ERROR, "DirectKernel: memory map capture failed\n"));
+      gBS->FreePages ((EFI_PHYSICAL_ADDRESS)TablePhys, TablesPages);
+      if (BssBuffer != NULL) {
+        gBS->FreePages ((EFI_PHYSICAL_ADDRESS)(UINTN)BssBuffer, EFI_SIZE_TO_PAGES ((UINTN)BssTotal));
+      }
+      gBS->FreePages ((EFI_PHYSICAL_ADDRESS)(UINTN)PageTable.Pml4, 1);
+      FreePool (StackBuffer);
+      FreePool (BootArgs);
+      FreePool (KernelBuffer);
+      return ExitStatus;
+    }
+    DEBUG ((DEBUG_INFO, "DirectKernel: memory map at 0x%llx size=%u phys=%llu\n",
+            (UINT64)(UINTN)MemMapBuffer, MemMapSize, PhysicalMemorySize));
+
+    //
+    // Identity-map every memory-map range (2 MB pages). This covers the
+    // kernel image, page tables, boot args, the handoff stack, UEFI runtime
+    // services and any framebuffer above 4 GB.
+    //
+    for (MapIdx = 0; MapIdx < MemMapSize; MapIdx += MemMapDescSize) {
+      EFI_MEMORY_DESCRIPTOR  *Desc = (EFI_MEMORY_DESCRIPTOR *)(MemMapBuffer + MapIdx);
+
+      if (Desc->NumberOfPages > 1) {
+        UINT64  RangeEnd = Desc->PhysicalStart +
+                           (UINT64)Desc->NumberOfPages * 4096ULL;
+
+        if (!X86PtIdentityRange (&PageTable, Desc->PhysicalStart, RangeEnd)) {
+          DEBUG ((DEBUG_ERROR, "DirectKernel: identity map failed at 0x%llx\n", Desc->PhysicalStart));
+          break;
+        }
+      }
+    }
+
+    //
+    // Map each kernel segment VA range at slide 0 to its host address.
+    // Pages beyond the file size (BSS) map into the zeroed backing.
+    //
+    for (SegIdx = 0; SegIdx < SegCount; ++SegIdx) {
+      UINT64  SegVa     = SegVmAddr[SegIdx];
+      UINT64  SegSize   = SegVmSize[SegIdx];
+      UINT64  SegFile   = SegFileOff[SegIdx];
+      UINT64  SegFDSize = SegFileSz[SegIdx];
+      UINTN   PageCount = (UINTN)((SegSize + 0xFFF) >> 12);
+
+      for (PageIdx = 0; PageIdx < PageCount; ++PageIdx) {
+        UINT64  Va;
+        UINT64  FileDelta;
+        UINT64  Pa;
+
+        Va        = SegVa + PageIdx * 0x1000ULL;
+        FileDelta = SegFile + PageIdx * 0x1000ULL;
+
+        if (FileDelta < SegFDSize) {
+          Pa = KernelPhys + FileDelta;
+        } else {
+          Pa = (UINT64)(UINTN)BssBuffer + BssCursor;
+          BssCursor += 0x1000ULL;
+        }
+
+        if (!X86PtMap4K (&PageTable, Va, Pa)) {
+          DEBUG ((DEBUG_ERROR, "DirectKernel: kernel VA map failed at 0x%llx\n", Va));
+          BssTotal = 0;
+          goto X86Cleanup;
+        }
+      }
+    }
+    DEBUG ((DEBUG_INFO, "DirectKernel: x86 kernel VAs mapped (slide=0)\n"));
+
+    //
+    // Fill the remaining BootArgs2 fields for the native x86 boot.
+    //
+    BootArgs->kslide                = 0;
+    BootArgs->kaddr                 = (UINT32)KernelPhys;
+    BootArgs->ksize                 = (UINT32)(KernelSize + BssTotal);
+    if (DtPhys != 0) {
+      BootArgs->deviceTreeP         = (UINT32)DtPhys;
+      BootArgs->deviceTreeLength    = (UINT32)DeviceTreeSize;
+    }
+    BootArgs->KC_hdrs_vaddr         = VaBase;
+    BootArgs->MemoryMap             = (UINT32)(UINTN)MemMapBuffer;
+    BootArgs->MemoryMapSize         = (UINT32)MemMapSize;
+    BootArgs->MemoryMapDescriptorSize    = (UINT32)MemMapDescSize;
+    BootArgs->MemoryMapDescriptorVersion = (UINT32)MemMapDescVersion;
+    BootArgs->efiSystemTable        = (UINT32)TablePhys;
+    BootArgs->efiRuntimeServicesPageStart = (UINT32)(TablePhys >> 12);
+    BootArgs->efiRuntimeServicesPageCount = (UINT32)TablesPages;
+    BootArgs->efiRuntimeServicesVirtualPageStart = TablePhys;
+    BootArgs->PhysicalMemorySize    = PhysicalMemorySize;
+    BootArgs->FSBFrequency          = 100000000ULL;   /* 100 MHz nominal */
+    BootArgs->pciConfigSpaceBaseAddress = 0xE0000000ULL;
+    BootArgs->pciConfigSpaceStartBusNumber = 0;
+    BootArgs->pciConfigSpaceEndBusNumber = 0xFF;
+    BootArgs->csrActiveConfig       = 0;
+    BootArgs->csrCapabilities       = 0;
+    BootArgs->flags |= kBootArgsFlagInstallUI;
+    BootArgs->debugMode = 0;
+    AsciiSPrint (BootArgs->CommandLine, BOOT_LINE_LENGTH, "install=1 -v");
+
+    Cr3 = (UINT64)(UINTN)PageTable.Pml4;
+    DEBUG ((DEBUG_INFO, "DirectKernel: x86 boot ready cr3=0x%llx entry=0x%llx args=0x%llx\n",
+            Cr3, EntryPoint, (UINT64)(UINTN)BootArgs));
+
+    //
+    // Capture the map key, then leave boot services. ExitBootServices can
+    // report a stale key if the map changed since; retry a few times by
+    // recapturing into the same reserved buffer.
+    //
+    for (Attempt = 0; Attempt < 8; ++Attempt) {
+      UINTN  RetrySize;
+      UINTN  RetryDescSize;
+      UINT32 RetryDescVersion;
+
+      RetrySize       = MemMapSize;
+      RetryDescSize   = 0;
+      RetryDescVersion = 0;
+      ExitStatus = gBS->GetMemoryMap (
+                          &RetrySize,
+                          (EFI_MEMORY_DESCRIPTOR *)MemMapBuffer,
+                          &MapKey,
+                          &RetryDescSize,
+                          &RetryDescVersion
+                          );
+      if (EFI_ERROR (ExitStatus)) {
+        break;
+      }
+
+      BootArgs->MemoryMap                  = (UINT32)(UINTN)MemMapBuffer;
+      BootArgs->MemoryMapSize              = (UINT32)RetrySize;
+      BootArgs->MemoryMapDescriptorSize    = (UINT32)RetryDescSize;
+      BootArgs->MemoryMapDescriptorVersion = (UINT32)RetryDescVersion;
+
+      DEBUG ((DEBUG_INFO, "DirectKernel: ExitBootServices attempt %u\n", Attempt));
+      ExitStatus = gBS->ExitBootServices (gX86ImageHandle, MapKey);
+      if (!EFI_ERROR (ExitStatus)) {
+        break;
+      }
+    }
+
+    if (EFI_ERROR (ExitStatus)) {
+      DEBUG ((DEBUG_ERROR, "DirectKernel: ExitBootServices failed - %r\n", ExitStatus));
+      goto X86Cleanup;
+    }
+
+    DEBUG ((DEBUG_INFO, "DirectKernel: jumping to xnu x86_64 entry...\n"));
+    X86JumpKernel (Cr3, EntryPoint, (UINT64)(UINTN)BootArgs);
+
+    //
+    // Unreachable: the kernel never returns.
+    //
+    X86Cleanup:
+    DEBUG ((DEBUG_ERROR, "DirectKernel: x86 native boot aborted\n"));
+    if (TablePhys != 0) {
+      gBS->FreePages ((EFI_PHYSICAL_ADDRESS)TablePhys, TablesPages);
+    }
+    if (BssBuffer != NULL && BssTotal > 0) {
+      gBS->FreePages ((EFI_PHYSICAL_ADDRESS)(UINTN)BssBuffer, EFI_SIZE_TO_PAGES ((UINTN)BssTotal));
+    }
+    gBS->FreePages ((EFI_PHYSICAL_ADDRESS)(UINTN)PageTable.Pml4, 1);
     if (DeviceTreeBuffer != NULL) {
       FreePool (DeviceTreeBuffer);
     }
+    FreePool (StackBuffer);
     FreePool (BootArgs);
     FreePool (KernelBuffer);
-    return EFI_UNSUPPORTED;
+    return EFI_DEVICE_ERROR;
   } else {
     FreePool (StackBuffer);
     if (DeviceTreeBuffer != NULL) {
@@ -2510,6 +3261,8 @@ OpenDbvX64EntryPoint (
   EFI_STATUS  Status;
 
   DEBUG ((DEBUG_INFO, "DBT: entry image=%p st=%p\n", ImageHandle, SystemTable));
+
+  gX86ImageHandle = ImageHandle;
 
   //
   // Raise the on-screen + file log level so the full verbose DBT trace is

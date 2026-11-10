@@ -15,7 +15,7 @@
 #ifndef CPUID_H
 #define CPUID_H
 
-#include <Register/Cpuid.h>
+#include <Register/Intel/Cpuid.h>
 
 #define CPUID_L2_CACHE_FEATURE  0x80000006
 
