@@ -28,6 +28,7 @@
   Include/Intel
   Include/Microsoft
   Include/Nvidia
+  Include/Register
   Include/VMware
 
 [Includes.AArch64]

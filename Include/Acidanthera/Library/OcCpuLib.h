@@ -17,7 +17,7 @@
 
 #include <Uefi.h>
 #include <IndustryStandard/CpuId.h>
-#include <Intel/IndustryStandard/AppleIntelCpuInfo.h>
+#include <IndustryStandard/AppleIntelCpuInfo.h>
 #include <Protocol/MpService.h>
 
 /**
