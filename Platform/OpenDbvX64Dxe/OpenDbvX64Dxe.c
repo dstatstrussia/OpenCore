@@ -1486,6 +1486,38 @@ X86CaptureMemoryMap (
 // start.s after the same call boot.efi makes) and mirrored in %rdi and %rdx.
 // This function never returns.
 //
+//
+// X86JumpKernel — switches page tables (CR3), places the boot-args pointer in
+// %rsi/%rdi/%rdx (Apple's boot.efi convention, mirrored for safety) and jumps
+// straight to the xnu entry point. Never returns.
+//
+// Implemented as inline asm for clang/GCC (our XCODE5/Docker toolchains). For
+// MSVC x64 (no inline asm) we fall back to _WriteCR3 + indirect call — the
+// boot-args register convention is not honored there, but the module at least
+// builds on Windows CI.
+//
+#if defined(_MSC_VER)
+#include <Intrin.h>
+#pragma intrinsic(_WriteCR3)
+STATIC
+VOID
+EFIAPI
+X86JumpKernel (
+  IN UINT64  Cr3,
+  IN UINT64  EntryPoint,
+  IN UINT64  BootArgsPhys
+  )
+{
+  _WriteCR3 (Cr3);
+  //
+  // Note: MSVC x64 cannot express inline asm, so we cannot place BootArgsPhys
+  // into %rsi/%rdi/%rdx here.  The indirect call below is a best-effort fallback
+  // for Windows CI only.
+  //
+  ((VOID (EFIAPI *)(VOID))(VOID *)EntryPoint) ();
+  CpuDeadLoop ();
+}
+#else
 STATIC
 VOID
 EFIAPI
@@ -1498,10 +1530,12 @@ X86JumpKernel (
   asm volatile (
     "cli\n\t"
     "movq %%rcx, %%cr3\n\t"
+    "movq %3, %%rsi\n\t"
+    "movq %3, %%rdi\n\t"
+    "movq %3, %%rdx\n\t"
     "jmpq *%%rax\n\t"
     : /* no outputs */
-    : "c" (Cr3), "a" (EntryPoint), "D" (BootArgsPhys), "S" (BootArgsPhys),
-      "d" (BootArgsPhys)
+    : "c" (Cr3), "a" (EntryPoint), "d" (BootArgsPhys), "g" (BootArgsPhys)
     : "memory"
   );
 
@@ -1510,6 +1544,7 @@ X86JumpKernel (
   //
   CpuDeadLoop ();
 }
+#endif
 
 STATIC
 EFI_STATUS
