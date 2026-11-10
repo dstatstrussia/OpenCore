@@ -1496,9 +1496,23 @@ X86CaptureMemoryMap (
 // boot-args register convention is not honored there, but the module at least
 // builds on Windows CI.
 //
+//
+// X86JumpKernel — switches page tables (CR3), places the boot-args pointer in
+// %rsi/%rdi/%rdx (Apple's boot.efi convention, mirrored for safety) and jumps
+// straight to the xnu entry point. Never returns.
+//
+// Only compiled for x86_64 targets. IA32 builds fall through to the generic
+// EFI_UNSUPPORTED path below.
+//
+
+#if defined(__x86_64__) || defined(_M_X64)
+
 #if defined(_MSC_VER)
-#include <Intrin.h>
-#pragma intrinsic(_WriteCR3)
+//
+// MSVC x64 does not support inline asm, so this is a best-effort stub that at
+// least builds on Windows CI. The real handoff (with boot-args in %rsi/%rdi/%rdx)
+// requires clang/GCC inline asm.
+//
 STATIC
 VOID
 EFIAPI
@@ -1508,16 +1522,13 @@ X86JumpKernel (
   IN UINT64  BootArgsPhys
   )
 {
-  _WriteCR3 (Cr3);
-  //
-  // Note: MSVC x64 cannot express inline asm, so we cannot place BootArgsPhys
-  // into %rsi/%rdi/%rdx here.  The indirect call below is a best-effort fallback
-  // for Windows CI only.
-  //
   ((VOID (EFIAPI *)(VOID))(VOID *)EntryPoint) ();
   CpuDeadLoop ();
 }
 #else
+//
+// clang/GCC inline asm — used on macOS XCODE5 and Linux GCC Docker builds.
+//
 STATIC
 VOID
 EFIAPI
@@ -1545,6 +1556,8 @@ X86JumpKernel (
   CpuDeadLoop ();
 }
 #endif
+
+#endif // defined(__x86_64__) || defined(_M_X64)
 
 STATIC
 EFI_STATUS
@@ -2522,6 +2535,7 @@ SKIP_READ_APPLE_KERNEL:
     FreePool (BootArgs);
     FreePool (KernelBuffer);
     return EFI_DEVICE_ERROR;
+#if defined(__x86_64__) || defined(_M_X64)
   } else if (!IsArm64) {
     //
     // x86_64 kernel — native direct boot on the x64 host.
@@ -2918,6 +2932,16 @@ SKIP_READ_APPLE_KERNEL:
     FreePool (BootArgs);
     FreePool (KernelBuffer);
     return EFI_DEVICE_ERROR;
+#else
+    DEBUG ((DEBUG_ERROR, "DirectKernel: x86_64 kernel boot not supported on IA32\n"));
+    FreePool (StackBuffer);
+    if (DeviceTreeBuffer != NULL) {
+      FreePool (DeviceTreeBuffer);
+    }
+    FreePool (BootArgs);
+    FreePool (KernelBuffer);
+    return EFI_UNSUPPORTED;
+#endif
   } else {
     FreePool (StackBuffer);
     if (DeviceTreeBuffer != NULL) {
