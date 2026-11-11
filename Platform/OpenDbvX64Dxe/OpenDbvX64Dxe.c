@@ -2934,16 +2934,6 @@ SKIP_READ_APPLE_KERNEL:
     FreePool (BootArgs);
     FreePool (KernelBuffer);
     return EFI_DEVICE_ERROR;
-#else
-    DEBUG ((DEBUG_ERROR, "DirectKernel: x86_64 kernel boot not supported on IA32\n"));
-    FreePool (StackBuffer);
-    if (DeviceTreeBuffer != NULL) {
-      FreePool (DeviceTreeBuffer);
-    }
-    FreePool (BootArgs);
-    FreePool (KernelBuffer);
-    return EFI_UNSUPPORTED;
-#endif
   } else {
     FreePool (StackBuffer);
     if (DeviceTreeBuffer != NULL) {
@@ -2953,6 +2943,18 @@ SKIP_READ_APPLE_KERNEL:
     FreePool (KernelBuffer);
     return EFI_UNSUPPORTED;
   }
+#else
+  } else {
+    DEBUG ((DEBUG_ERROR, "DirectKernel: x86_64 kernel boot not supported on IA32\n"));
+    FreePool (StackBuffer);
+    if (DeviceTreeBuffer != NULL) {
+      FreePool (DeviceTreeBuffer);
+    }
+    FreePool (BootArgs);
+    FreePool (KernelBuffer);
+    return EFI_UNSUPPORTED;
+  }
+#endif
 }
 
 STATIC
