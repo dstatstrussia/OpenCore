@@ -51,6 +51,10 @@
   gOpenCorePkgTokenSpaceGuid.PcdOcDbtTraceMem
   gOpenCorePkgTokenSpaceGuid.PcdOcDbtLoopBudget
   gOpenCorePkgTokenSpaceGuid.PcdOcDbtQuirks
+  gOpenCorePkgTokenSpaceGuid.PcdOcDbtEnableGpu
+  gOpenCorePkgTokenSpaceGuid.PcdOcDbtEnableRayQuery
+  gOpenCorePkgTokenSpaceGuid.PcdOcDbtEnablePac
+  gOpenCorePkgTokenSpaceGuid.PcdOcDbtEnableSve
 
 [BuildOptions]
   GCC:*_*_*_CC_FLAGS = -m80387
