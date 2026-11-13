@@ -33,6 +33,7 @@
   BaseMemoryLib
   DebugLib
   MemoryAllocationLib
+  PcdLib
   UefiLib
   UefiBootServicesTableLib
   OcMemoryLib
@@ -40,6 +41,16 @@
 [Sources]
   OcDbtLib.c
   OcDbtComplex.c
+  OcDbtEnhanced.c
+
+[Protocols]
+  gEfiSimpleFileSystemProtocolGuid
+
+[FixedPcd]
+  gOpenCorePkgTokenSpaceGuid.PcdOcDbtVerbose
+  gOpenCorePkgTokenSpaceGuid.PcdOcDbtTraceMem
+  gOpenCorePkgTokenSpaceGuid.PcdOcDbtLoopBudget
+  gOpenCorePkgTokenSpaceGuid.PcdOcDbtQuirks
 
 [BuildOptions]
   GCC:*_*_*_CC_FLAGS = -m80387

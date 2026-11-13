@@ -3685,7 +3685,7 @@ VOID DbtExecute (DBT_CONTEXT *Ctx, DBT_ARM64_STATE *ArmState) {
   }
 
   // Call translated code with &ArmState as arg (already in RBX from prologue)
-  gDbtChainBudget = (1u << 20);
+  gDbtChainBudget = (Ctx->DefaultLoopBudget != 0) ? (UINTN)Ctx->DefaultLoopBudget : (1u << 20);
   VOID (*Entry)(DBT_ARM64_STATE *) = (VOID(*)(DBT_ARM64_STATE*))Ctx->TranslatedCode;
   Entry(&Ctx->ArmState);
 
@@ -3694,6 +3694,7 @@ VOID DbtExecute (DBT_CONTEXT *Ctx, DBT_ARM64_STATE *ArmState) {
 
   // Copy state back
   CopyMem(ArmState, &Ctx->ArmState, sizeof(DBT_ARM64_STATE));
+  Ctx->TotalExecutedBlocks++;
 
   //
   // Chain-loop watchdog hit: a chained branch exhausted its budget and
@@ -3728,8 +3729,10 @@ EFI_STATUS DbtTranslateBlock (DBT_CONTEXT *Ctx, VOID *ArmCode, UINTN CodeSize, U
       // Cache hit — nothing to emit.  Silent here: DbtExecute reports each
       // distinct PC (and spin loops via the 4096-iteration liveness line),
       // so per-call logging would only flood the log in alternating loops.
+      Ctx->CacheHits++;
       return EFI_SUCCESS;
     }
+    Ctx->CacheMisses++;
   }
 
   UINT8 *Buf  = X86Code ? (UINT8 *)X86Code : (UINT8 *)Ctx->TranslatedCode + Ctx->TranslatedSize;
@@ -3826,6 +3829,9 @@ EFI_STATUS DbtTranslateBlock (DBT_CONTEXT *Ctx, VOID *ArmCode, UINTN CodeSize, U
     DBG((DEBUG_INFO, "DBT: Jump slot -> %p (rel 0x%x)\n", Ctx->LastBlockStart, (UINT32)Rel));
   }
 
+  if (!X86Code) {
+    Ctx->TotalTranslatedBlocks++;
+  }
   DBG((DEBUG_INFO, "DBT: Translated %u instructions, %u x86 bytes\n", Count, Ctx->TranslatedSize));
   return EFI_SUCCESS;
 }

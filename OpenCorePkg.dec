@@ -844,6 +844,42 @@
   #  For the corresponding bits, 0 = Edge triggered and 1 = Level triggered.
   gOpenCorePkgTokenSpaceGuid.Pcd8259LegacyModeEdgeLevel|0x0000|UINT16|0x0000060a
 
+  ## Enables verbose translation tracing in OcDbtLib.<BR><BR>
+  ## @Prompt Enable OcDbtLib verbose tracing.
+  gOpenCorePkgTokenSpaceGuid.PcdOcDbtVerbose|FALSE|BOOLEAN|0x0000060b
+
+  ## Enables memory-access tracing in OcDbtLib.<BR><BR>
+  ## @Prompt Enable OcDbtLib memory tracing.
+  gOpenCorePkgTokenSpaceGuid.PcdOcDbtTraceMem|FALSE|BOOLEAN|0x0000060c
+
+  ## Enables the GPU emulation surface (PCI/BAR1/GSP) of OcDbtLib.<BR><BR>
+  ## @Prompt Enable OcDbtLib GPU emulation.
+  gOpenCorePkgTokenSpaceGuid.PcdOcDbtEnableGpu|FALSE|BOOLEAN|0x0000060d
+
+  ## Enables the RT-core ray-query path (HWRT) of OcDbtLib.<BR><BR>
+  ## @Prompt Enable OcDbtLib ray query.
+  gOpenCorePkgTokenSpaceGuid.PcdOcDbtEnableRayQuery|FALSE|BOOLEAN|0x0000060e
+
+  ## Enables Pointer Authentication (ARMv8.3 PAC) emulation in OcDbtLib.<BR><BR>
+  ## @Prompt Enable OcDbtLib PAC emulation.
+  gOpenCorePkgTokenSpaceGuid.PcdOcDbtEnablePac|TRUE|BOOLEAN|0x0000060f
+
+  ## Enables SVE (Scalable Vector Extension) handling in OcDbtLib.<BR><BR>
+  ## @Prompt Enable OcDbtLib SVE support.
+  gOpenCorePkgTokenSpaceGuid.PcdOcDbtEnableSve|FALSE|BOOLEAN|0x00000610
+
+  ## Default loop / chain budget consumed by the OcDbtLib chain watchdog
+  ## (mirrors the loop-budget instrumentation of the nullmoth translator;
+  ## 0x10000 matches its DEFAULT_LOOP_BUDGET).<BR><BR>
+  ## @Prompt OcDbtLib default loop budget.
+  gOpenCorePkgTokenSpaceGuid.PcdOcDbtLoopBudget|0x10000|UINT32|0x00000611
+
+  ## OpenCore quirks mask passed to DbtApplyQuirks: bit 0 ResizeGpuBars,
+  ##  bit 1 ResizeAppleGpuBars, bit 2 AMFI disable, bit 3 SIP disable,
+  ##  bit 4 -nvoff, bit 5 -nvkmsnosmooth.<BR><BR>
+  ## @Prompt OcDbtLib OpenCore quirks mask.
+  gOpenCorePkgTokenSpaceGuid.PcdOcDbtQuirks|0x0|UINT32|0x00000612
+
 [LibraryClasses]
   ##  @libraryclass
   OcAcpiLib|Include/Acidanthera/Library/OcAcpiLib.h

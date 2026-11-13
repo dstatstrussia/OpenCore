@@ -93,5 +93,37 @@ typedef struct DBT_CONTEXT {
   UINTN            PcieBarCount;
   DBT_DEVICE       Devices[DBT_MAX_DEVICES]; // Registered device array (embedded)
   UINTN            DeviceCount;
+  //
+  // Enhanced (NVRM-inspired): PCI devices with full BAR management.
+  // Appended before CodeBuffer so DbtInitContext's TranslatedCode placement
+  // (Ctx + sizeof(DBT_CONTEXT)) stays valid.
+  //
+  DBT_PCI_DEVICE   PciDevices[DBT_MAX_PCI_DEVICES];
+  UINTN            PciDeviceCount;
+  //
+  // Enhanced (HWRT-inspired): scoreboards for GPU/RT synchronisation
+  //
+  DBT_SCOREBOARD   Scoreboards[DBT_MAX_SCOREBOARDS];
+  UINTN            ScoreboardCount;
+  //
+  // Enhanced: translation options, OpenCore quirks and loop budget
+  //
+  UINT32           TranslateFlags;
+  UINT32           Quirks;
+  UINT32           DefaultLoopBudget;
+  //
+  // Enhanced: profiling counters (see DbtGetStats)
+  //
+  UINT64           TotalTranslatedBlocks;
+  UINT64           TotalExecutedBlocks;
+  UINT64           CacheHits;
+  UINT64           CacheMisses;
+  UINT64           LoopBudgetExhausted;
+  //
+  // Enhanced (NVRM-inspired): sleep/wake support
+  //
+  BOOLEAN          Suspended;
+  UINT8           *SavedState;
+  UINTN            SavedStateSize;
   UINT8            CodeBuffer[0];
 } DBT_CONTEXT;
