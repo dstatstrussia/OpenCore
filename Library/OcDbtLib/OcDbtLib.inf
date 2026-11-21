@@ -34,6 +34,7 @@
   DebugLib
   MemoryAllocationLib
   PcdLib
+  SynchronizationLib
   UefiLib
   UefiBootServicesTableLib
   OcMemoryLib

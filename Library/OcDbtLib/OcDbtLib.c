@@ -8,6 +8,7 @@
 #include <Library/BaseMemoryLib.h>
 #include <Library/DebugLib.h>
 #include <Library/MemoryAllocationLib.h>
+#include <Library/SynchronizationLib.h>
 #include <Library/UefiBootServicesTableLib.h>
 #include <Library/OcMemoryLib.h>
 #include "OcDbtLib.h"
@@ -1571,17 +1572,56 @@ STATIC VOID DbtComputeNzcv (IN DBT_CONTEXT *Ctx) {
 // result comes back in RAX/EAX (MS x64, the UEFI native ABI).
 //
 
+//
+// MdePkg's SynchronizationLib covers the 16/32/64-bit compare-exchange
+// operations; there is no byte-wide wrapper.  Rather than relying on compiler
+// builtins (which differ between clang, GCC and MSVC), the byte case is built
+// on top of the 32-bit interlocked operation with a small dedicated lock.
+// The translated guest runs single-threaded on the boot CPU, so the lock is
+// only ever contended by a preemption, never by a long-running waiter.
+//
+STATIC volatile UINT32  gDbtByteCasLock = 0;
+
+STATIC
+BOOLEAN
+DbtCompareExchange8 (
+  IN OUT  volatile UINT8  *Slot,
+  IN      UINT8           Compare,
+  IN      UINT8           Exchange
+  )
+{
+  BOOLEAN  Result;
+
+  while (InterlockedCompareExchange32 (&gDbtByteCasLock, 1, 0) != 0) {
+    CpuPause ();
+  }
+
+  if (*Slot == Compare) {
+    *Slot  = Exchange;
+    Result = TRUE;
+  } else {
+    Result = FALSE;
+  }
+
+  gDbtByteCasLock = 0;
+  return Result;
+}
+
 STATIC UINT64
 DbtLoadSized (
   IN UINT64  Addr,
   IN UINT32  Size
   )
 {
+  UINTN  Address;
+
+  Address = (UINTN)Addr;
+
   switch (Size) {
-    case 1:  return *(volatile UINT8 *)Addr;
-    case 2:  return *(volatile UINT16 *)Addr;
-    case 4:  return *(volatile UINT32 *)Addr;
-    default: return *(volatile UINT64 *)Addr;
+    case 1:  return *(volatile UINT8 *)Address;
+    case 2:  return *(volatile UINT16 *)Address;
+    case 4:  return *(volatile UINT32 *)Address;
+    default: return *(volatile UINT64 *)Address;
   }
 }
 
@@ -1592,11 +1632,15 @@ DbtStoreSized (
   IN UINT64  Value
   )
 {
+  UINTN  Address;
+
+  Address = (UINTN)Addr;
+
   switch (Size) {
-    case 1:  *(volatile UINT8 *)Addr  = (UINT8)Value;  break;
-    case 2:  *(volatile UINT16 *)Addr = (UINT16)Value; break;
-    case 4:  *(volatile UINT32 *)Addr = (UINT32)Value; break;
-    default: *(volatile UINT64 *)Addr = Value;         break;
+    case 1:  *(volatile UINT8 *)Address  = (UINT8)Value;  break;
+    case 2:  *(volatile UINT16 *)Address = (UINT16)Value; break;
+    case 4:  *(volatile UINT32 *)Address = (UINT32)Value; break;
+    default: *(volatile UINT64 *)Address = Value;         break;
   }
 }
 
@@ -1691,58 +1735,46 @@ DbtAtomicCas (
 
   switch (Size) {
     case 1:
-    {
-      volatile UINT8  *Slot = (volatile UINT8 *)Addr;
-      UINT8            Old  = *Slot;
-
-      if (Old != (UINT8)Compare) {
-        return Old;
-      }
-      if (__sync_bool_compare_and_swap ((UINT8 *)Addr, (UINT8)Compare, (UINT8)NewValue)) {
+      if (DbtCompareExchange8 ((volatile UINT8 *)(UINTN)Addr, (UINT8)Compare, (UINT8)NewValue)) {
         return Compare;
       }
-      return *Slot;
-    }
+      break;
     case 2:
-    {
-      volatile UINT16  *Slot = (volatile UINT16 *)Addr;
-      UINT16            Old  = *Slot;
-
-      if (Old != (UINT16)Compare) {
-        return Old;
-      }
-      if (__sync_bool_compare_and_swap ((UINT16 *)Addr, (UINT16)Compare, (UINT16)NewValue)) {
+      if (InterlockedCompareExchange16 (
+            (volatile UINT16 *)(UINTN)Addr,
+            (UINT16)NewValue,
+            (UINT16)Compare
+            ) == (UINT16)Compare)
+      {
         return Compare;
       }
-      return *Slot;
-    }
+      break;
     case 4:
-    {
-      volatile UINT32  *Slot = (volatile UINT32 *)Addr;
-      UINT32            Old  = *Slot;
-
-      if (Old != (UINT32)Compare) {
-        return Old;
-      }
-      if (__sync_bool_compare_and_swap ((UINT32 *)Addr, (UINT32)Compare, (UINT32)NewValue)) {
+      if (InterlockedCompareExchange32 (
+            (volatile UINT32 *)(UINTN)Addr,
+            (UINT32)NewValue,
+            (UINT32)Compare
+            ) == (UINT32)Compare)
+      {
         return Compare;
       }
-      return *Slot;
-    }
+      break;
     default:
-    {
-      volatile UINT64  *Slot = (volatile UINT64 *)Addr;
-      UINT64            Old  = *Slot;
-
-      if (Old != Compare) {
-        return Old;
-      }
-      if (__sync_bool_compare_and_swap ((UINT64 *)Addr, Compare, NewValue)) {
+      if (InterlockedCompareExchange64 (
+            (volatile UINT64 *)(UINTN)Addr,
+            NewValue,
+            Compare
+            ) == Compare)
+      {
         return Compare;
       }
-      return *Slot;
-    }
+      break;
   }
+
+  //
+  // The exchange failed: the current memory contents become the new Xs.
+  //
+  return DbtLoadSized (Addr, Size);
 }
 
 //
@@ -1802,16 +1834,28 @@ DbtExclusiveStore (
 
   switch (Size) {
     case 1:
-      Ok = __sync_bool_compare_and_swap ((UINT8 *)Addr, (UINT8)ReservedVal, (UINT8)Value);
+      Ok = DbtCompareExchange8 ((volatile UINT8 *)(UINTN)Addr, (UINT8)ReservedVal, (UINT8)Value);
       break;
     case 2:
-      Ok = __sync_bool_compare_and_swap ((UINT16 *)Addr, (UINT16)ReservedVal, (UINT16)Value);
+      Ok = InterlockedCompareExchange16 (
+             (volatile UINT16 *)(UINTN)Addr,
+             (UINT16)Value,
+             (UINT16)ReservedVal
+             ) == (UINT16)ReservedVal;
       break;
     case 4:
-      Ok = __sync_bool_compare_and_swap ((UINT32 *)Addr, (UINT32)ReservedVal, (UINT32)Value);
+      Ok = InterlockedCompareExchange32 (
+             (volatile UINT32 *)(UINTN)Addr,
+             (UINT32)Value,
+             (UINT32)ReservedVal
+             ) == (UINT32)ReservedVal;
       break;
     default:
-      Ok = __sync_bool_compare_and_swap ((UINT64 *)Addr, ReservedVal, Value);
+      Ok = InterlockedCompareExchange64 (
+             (volatile UINT64 *)(UINTN)Addr,
+             Value,
+             ReservedVal
+             ) == ReservedVal;
       break;
   }
 
