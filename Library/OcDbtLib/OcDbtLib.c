@@ -600,6 +600,118 @@ STATIC VOID EmitSbbRdxRdx (UINT8 **P) { EmitRexW(P); EmitByte(P, 0x19); EmitByte
 STATIC VOID EmitAndRdxRcx (UINT8 **P) { EmitRexW(P); EmitByte(P, 0x21); EmitByte(P, 0xCA); }
 STATIC VOID EmitOrRaxRdx  (UINT8 **P) { EmitRexW(P); EmitByte(P, 0x09); EmitByte(P, 0xD0); }
 
+// AND RAX, RDX
+STATIC VOID EmitAndRaxRdx (UINT8 **P) { EmitRexW(P); EmitByte(P, 0x21); EmitByte(P, 0xD0); }
+
+// MOV RDX, imm64
+STATIC VOID EmitMovRdxImm (UINT8 **P, UINT64 Val) {
+  EmitRexW(P); EmitByte(P, 0xBA); EmitQword(P, Val);
+}
+
+// MOV R8D/R9D, imm32 (the 32-bit write clears the upper half)
+STATIC VOID EmitMovR8dImm (UINT8 **P, UINT32 Val) {
+  EmitByte(P, 0x41); EmitByte(P, 0xB8); EmitDword(P, Val);
+}
+STATIC VOID EmitMovR9dImm (UINT8 **P, UINT32 Val) {
+  EmitByte(P, 0x41); EmitByte(P, 0xB9); EmitDword(P, Val);
+}
+
+// MOV RDX, RAX / MOV RCX, RAX
+STATIC VOID EmitMovRdxRax (UINT8 **P) { EmitRexW(P); EmitByte(P, 0x89); EmitByte(P, 0xC2); }
+STATIC VOID EmitMovRcxRax (UINT8 **P) { EmitRexW(P); EmitByte(P, 0x89); EmitByte(P, 0xC1); }
+
+// MOV R8, RAX
+STATIC VOID EmitMovR8Rax (UINT8 **P) { EmitByte(P, 0x49); EmitByte(P, 0x89); EmitByte(P, 0xC0); }
+
+// MFENCE / LFENCE — give guest DMB/DSB/ISB an x86 TSO equivalent
+STATIC VOID EmitMfence (UINT8 **P) { EmitByte(P, 0x0F); EmitByte(P, 0xAE); EmitByte(P, 0xF0); }
+STATIC VOID EmitLfence (UINT8 **P) { EmitByte(P, 0x0F); EmitByte(P, 0xAE); EmitByte(P, 0xE8); }
+
+//
+// CLZ/CLS: BSR finds the most-significant set bit; the zero case is folded
+// in with CMOVZ (BSR leaves its destination undefined for a zero source,
+// so the fallback result is preloaded).  ECX holds the BSR result, EDX the
+// tested value; the result (0..64) is left in EAX.
+//
+STATIC VOID EmitClzCore (UINT8 **P, BOOLEAN IsW, UINT32 ZeroResult, UINT32 NonZeroBase) {
+  EmitByte(P, 0xB8); EmitDword(P, NonZeroBase);          // MOV EAX, size-1
+  EmitMovR8dImm(P, ZeroResult);                          // MOV R8D, size
+  EmitByte(P, 0x29); EmitByte(P, 0xC8);                  // SUB EAX, ECX
+  if (IsW) { EmitByte(P, 0x85); EmitByte(P, 0xD2); }     // TEST EDX, EDX
+  else     { EmitRexW(P); EmitByte(P, 0x85); EmitByte(P, 0xD2); }
+  EmitByte(P, 0x44); EmitByte(P, 0x0F); EmitByte(P, 0x44); EmitByte(P, 0xC0);  // CMOVZ EAX, R8D
+}
+
+STATIC VOID EmitClz (UINT8 **P, BOOLEAN IsW) {
+  if (IsW) {
+    EmitByte(P, 0x89); EmitByte(P, 0xC2);                          // MOV EDX, EAX
+    EmitByte(P, 0x0F); EmitByte(P, 0xBD); EmitByte(P, 0xCA);       // BSR ECX, EDX
+    EmitClzCore(P, TRUE, 32, 31);
+  } else {
+    EmitMovRdxRax(P);                                              // MOV RDX, RAX
+    EmitRexW(P); EmitByte(P, 0x0F); EmitByte(P, 0xBD); EmitByte(P, 0xCA);  // BSR RCX, RDX
+    EmitClzCore(P, FALSE, 64, 63);
+  }
+}
+
+STATIC VOID EmitCls (UINT8 **P, BOOLEAN IsW) {
+  //
+  // CLS(x) = CLZ(x ^ (x >> 1 arithmetically)) - 1
+  //
+  if (IsW) {
+    EmitByte(P, 0x89); EmitByte(P, 0xC1);                      // MOV ECX, EAX
+    EmitByte(P, 0xC1); EmitByte(P, 0xF9); EmitByte(P, 0x01);   // SAR ECX, 1
+    EmitByte(P, 0x31); EmitByte(P, 0xC8);                      // XOR EAX, ECX
+    EmitByte(P, 0x89); EmitByte(P, 0xC2);                      // MOV EDX, EAX
+    EmitByte(P, 0x0F); EmitByte(P, 0xBD); EmitByte(P, 0xCA);   // BSR ECX, EDX
+    EmitClzCore(P, TRUE, 31, 30);
+  } else {
+    EmitMovRcxRax(P);                                          // MOV RCX, RAX
+    EmitByte(P, 0x48); EmitByte(P, 0xC1); EmitByte(P, 0xF9); EmitByte(P, 0x01);  // SAR RCX, 1
+    EmitXorRaxRcx(P);                                          // XOR RAX, RCX
+    EmitMovRdxRax(P);                                          // MOV RDX, RAX
+    EmitRexW(P); EmitByte(P, 0x0F); EmitByte(P, 0xBD); EmitByte(P, 0xCA);  // BSR RCX, RDX
+    EmitClzCore(P, FALSE, 63, 62);
+  }
+}
+
+// REV: BSWAP reverses the byte order of the 32/64-bit register.
+STATIC VOID EmitRev (UINT8 **P, BOOLEAN IsW) {
+  if (IsW) { EmitByte(P, 0x0F); EmitByte(P, 0xC8); }
+  else     { EmitRexW(P); EmitByte(P, 0x0F); EmitByte(P, 0xC8); }
+}
+
+// REV32 (64-bit form): BSWAP each 32-bit half independently.
+STATIC VOID EmitRev32 (UINT8 **P) {
+  EmitMovRcxRax(P);                                   // MOV RCX, RAX
+  EmitByte(P, 0x0F); EmitByte(P, 0xC8);               // BSWAP EAX
+  EmitShrRcxImm(P, 32);                               // SHR RCX, 32
+  EmitByte(P, 0x0F); EmitByte(P, 0xC9);               // BSWAP ECX
+  EmitRexW(P); EmitByte(P, 0xC1); EmitByte(P, 0xE1); EmitByte(P, 0x20);  // SHL RCX, 32
+  EmitOrRaxRcx(P);                                    // OR RAX, RCX
+}
+
+// REV16: swap the two bytes inside every 16-bit element.
+STATIC VOID EmitRev16 (UINT8 **P, BOOLEAN IsW) {
+  if (IsW) {
+    EmitByte(P, 0x89); EmitByte(P, 0xC1);                      // MOV ECX, EAX
+    EmitByte(P, 0xBA); EmitDword(P, 0x00FF00FF);               // MOV EDX, 0x00FF00FF
+    EmitByte(P, 0x21); EmitByte(P, 0xD0);                      // AND EAX, EDX
+    EmitByte(P, 0xC1); EmitByte(P, 0xE9); EmitByte(P, 0x08);   // SHR ECX, 8
+    EmitByte(P, 0x21); EmitByte(P, 0xD1);                      // AND ECX, EDX
+    EmitByte(P, 0xC1); EmitByte(P, 0xE0); EmitByte(P, 0x08);   // SHL EAX, 8
+    EmitByte(P, 0x09); EmitByte(P, 0xC8);                      // OR EAX, ECX
+  } else {
+    EmitMovRcxRax(P);                                          // MOV RCX, RAX
+    EmitMovRdxImm(P, 0x00FF00FF00FF00FFULL);                   // MOV RDX, mask
+    EmitAndRaxRdx(P);                                          // AND RAX, RDX
+    EmitShrRcxImm(P, 8);                                       // SHR RCX, 8
+    EmitRexW(P); EmitByte(P, 0x21); EmitByte(P, 0xD1);         // AND RCX, RDX
+    EmitByte(P, 0x48); EmitByte(P, 0xC1); EmitByte(P, 0xE0); EmitByte(P, 0x08);  // SHL RAX, 8
+    EmitOrRaxRcx(P);                                           // OR RAX, RCX
+  }
+}
+
 // =========== Prologue / Epilogue ===========
 STATIC UINTN EmitPrologue (UINT8 **P) {
   UINT8 *Start = *P;
@@ -1450,6 +1562,397 @@ STATIC VOID DbtComputeNzcv (IN DBT_CONTEXT *Ctx) {
   S->HasSetter = FALSE;
 }
 
+// =========== Atomic / bit-manipulation runtime helpers ===========
+//
+// The translated kernel executes ARMv8.1 LSE atomics, exclusives and CRC32
+// instructions.  Emitting those inline would need long x86 sequences and a
+// few are variable-length, so the translator calls these small out-of-line
+// helpers.  Calling convention: RCX, RDX, R8, R9 hold the arguments and the
+// result comes back in RAX/EAX (MS x64, the UEFI native ABI).
+//
+
+STATIC UINT64
+DbtLoadSized (
+  IN UINT64  Addr,
+  IN UINT32  Size
+  )
+{
+  switch (Size) {
+    case 1:  return *(volatile UINT8 *)Addr;
+    case 2:  return *(volatile UINT16 *)Addr;
+    case 4:  return *(volatile UINT32 *)Addr;
+    default: return *(volatile UINT64 *)Addr;
+  }
+}
+
+STATIC VOID
+DbtStoreSized (
+  IN UINT64  Addr,
+  IN UINT32  Size,
+  IN UINT64  Value
+  )
+{
+  switch (Size) {
+    case 1:  *(volatile UINT8 *)Addr  = (UINT8)Value;  break;
+    case 2:  *(volatile UINT16 *)Addr = (UINT16)Value; break;
+    case 4:  *(volatile UINT32 *)Addr = (UINT32)Value; break;
+    default: *(volatile UINT64 *)Addr = Value;         break;
+  }
+}
+
+STATIC UINT64
+DbtSizeMask (
+  IN UINT32  Size
+  )
+{
+  return (Size >= 8) ? ~(UINT64)0 : ((((UINT64)1) << (Size * 8)) - 1);
+}
+
+STATIC INT64
+DbtSignExtendSized (
+  IN UINT64  Value,
+  IN UINT32  Size
+  )
+{
+  UINT32  Shift;
+  UINT64  Shifted;
+
+  if (Size >= 8) {
+    return (INT64)Value;
+  }
+
+  Shift   = 64 - Size * 8;
+  Shifted = Value << Shift;
+  return ((INT64)Shifted) >> Shift;
+}
+
+//
+// LDADD/LDCLR/LDEOR/LDSET/LDSMAX/LDSMIN/LDUMAX/LDUMIN/SWP.
+// Returns the pre-update value (zero-extended to the access width).
+//
+STATIC UINT64
+DbtAtomicRmw (
+  IN UINT64  Addr,
+  IN UINT64  Operand,
+  IN UINT32  Size,
+  IN UINT32  Op
+  )
+{
+  UINT64  Old;
+  UINT64  New;
+  INT64   SOld;
+  INT64   SOperand;
+
+  Old      = DbtLoadSized (Addr, Size);
+  Operand &= DbtSizeMask (Size);
+
+  switch (Op) {
+    case 0: New = Old + Operand;      break;  // LDADD
+    case 1: New = Old & ~Operand;     break;  // LDCLR
+    case 2: New = Old ^ Operand;      break;  // LDEOR
+    case 3: New = Old | Operand;      break;  // LDSET
+    case 4:                                    // LDSMAX
+    case 5:                                    // LDSMIN
+      SOld     = DbtSignExtendSized (Old, Size);
+      SOperand = DbtSignExtendSized (Operand, Size);
+      if (Op == 4) {
+        New = (SOld >= SOperand) ? Old : Operand;
+      } else {
+        New = (SOld <= SOperand) ? Old : Operand;
+      }
+      break;
+    case 6: New = (Old >= Operand) ? Old : Operand; break;   // LDUMAX
+    case 7: New = (Old <= Operand) ? Old : Operand; break;   // LDUMIN
+    default: New = Operand;           break;                 // SWP (8)
+  }
+
+  DbtStoreSized (Addr, Size, New);
+  return Old;
+}
+
+//
+// CAS/CASA/CASL/CASAL: if *Addr == Compare then *Addr = NewValue, else
+// Compare = *Addr.  The caller stores the returned value back into Xs, so
+// the failure path must return the current memory contents.
+//
+STATIC UINT64
+DbtAtomicCas (
+  IN UINT64  Addr,
+  IN UINT64  Compare,
+  IN UINT64  NewValue,
+  IN UINT32  Size
+  )
+{
+  UINT64  Mask;
+
+  Mask      = DbtSizeMask (Size);
+  Compare  &= Mask;
+  NewValue &= Mask;
+
+  switch (Size) {
+    case 1:
+    {
+      volatile UINT8  *Slot = (volatile UINT8 *)Addr;
+      UINT8            Old  = *Slot;
+
+      if (Old != (UINT8)Compare) {
+        return Old;
+      }
+      if (__sync_bool_compare_and_swap ((UINT8 *)Addr, (UINT8)Compare, (UINT8)NewValue)) {
+        return Compare;
+      }
+      return *Slot;
+    }
+    case 2:
+    {
+      volatile UINT16  *Slot = (volatile UINT16 *)Addr;
+      UINT16            Old  = *Slot;
+
+      if (Old != (UINT16)Compare) {
+        return Old;
+      }
+      if (__sync_bool_compare_and_swap ((UINT16 *)Addr, (UINT16)Compare, (UINT16)NewValue)) {
+        return Compare;
+      }
+      return *Slot;
+    }
+    case 4:
+    {
+      volatile UINT32  *Slot = (volatile UINT32 *)Addr;
+      UINT32            Old  = *Slot;
+
+      if (Old != (UINT32)Compare) {
+        return Old;
+      }
+      if (__sync_bool_compare_and_swap ((UINT32 *)Addr, (UINT32)Compare, (UINT32)NewValue)) {
+        return Compare;
+      }
+      return *Slot;
+    }
+    default:
+    {
+      volatile UINT64  *Slot = (volatile UINT64 *)Addr;
+      UINT64            Old  = *Slot;
+
+      if (Old != Compare) {
+        return Old;
+      }
+      if (__sync_bool_compare_and_swap ((UINT64 *)Addr, Compare, NewValue)) {
+        return Compare;
+      }
+      return *Slot;
+    }
+  }
+}
+
+//
+// Exclusive monitor for LDXR/STXR.  The guest runs translated code on one
+// CPU for the boot path, so a single reservation slot mirrors the ARM
+// local monitor closely enough; STXR is still an atomic compare-exchange
+// against the value captured by LDXR, so a racing writer can never be lost.
+//
+STATIC UINT64  gDbtExclusiveAddr = 0;
+STATIC UINT64  gDbtExclusiveVal  = 0;
+STATIC UINT32  gDbtExclusiveSize = 0;
+
+STATIC UINT64
+DbtExclusiveLoad (
+  IN UINT64  Addr,
+  IN UINT32  Size
+  )
+{
+  UINT64  Value;
+
+  Value             = DbtLoadSized (Addr, Size);
+  gDbtExclusiveAddr = Addr;
+  gDbtExclusiveVal  = Value;
+  gDbtExclusiveSize = Size;
+  return Value;
+}
+
+STATIC UINT32
+DbtExclusiveStore (
+  IN UINT64  Addr,
+  IN UINT64  Value,
+  IN UINT32  Size
+  )
+{
+  UINT64  ReservedAddr;
+  UINT64  ReservedVal;
+  UINT32  ReservedSize;
+  BOOLEAN Ok;
+
+  //
+  // STXR clears the local monitor regardless of the outcome, so take a
+  // local copy of the reservation and drop it before touching memory.
+  //
+  ReservedAddr      = gDbtExclusiveAddr;
+  ReservedVal       = gDbtExclusiveVal;
+  ReservedSize      = gDbtExclusiveSize;
+  gDbtExclusiveAddr = 0;
+  gDbtExclusiveSize = 0;
+
+  if ((ReservedAddr != Addr) || (ReservedSize != Size)) {
+    return 1;
+  }
+
+  if (DbtLoadSized (Addr, Size) != ReservedVal) {
+    return 1;
+  }
+
+  switch (Size) {
+    case 1:
+      Ok = __sync_bool_compare_and_swap ((UINT8 *)Addr, (UINT8)ReservedVal, (UINT8)Value);
+      break;
+    case 2:
+      Ok = __sync_bool_compare_and_swap ((UINT16 *)Addr, (UINT16)ReservedVal, (UINT16)Value);
+      break;
+    case 4:
+      Ok = __sync_bool_compare_and_swap ((UINT32 *)Addr, (UINT32)ReservedVal, (UINT32)Value);
+      break;
+    default:
+      Ok = __sync_bool_compare_and_swap ((UINT64 *)Addr, ReservedVal, Value);
+      break;
+  }
+
+  return Ok ? 0 : 1;
+}
+
+//
+// CRC32B/H/W/X and CRC32CB/CH/CW/CX.  Reflected polynomials, processed from
+// the least-significant byte of the data operand, exactly as the ARM
+// pseudocode specifies.
+//
+STATIC UINT32
+DbtCrc32 (
+  IN UINT32  Crc,
+  IN UINT64  Data,
+  IN UINT32  Bytes,
+  IN UINT32  Castagnoli
+  )
+{
+  UINT32  Poly;
+  UINT32  Bit;
+
+  Poly = (Castagnoli != 0) ? 0x82F63B78u : 0xEDB88320u;
+
+  while (Bytes-- != 0) {
+    Crc ^= (UINT32)(Data & 0xFF);
+    for (Bit = 0; Bit < 8; Bit++) {
+      Crc = (Crc >> 1) ^ (Poly & (0u - (Crc & 1u)));
+    }
+    Data >>= 8;
+  }
+
+  return Crc;
+}
+
+//
+// RBIT.  A 32-bit guest value is zero-extended by the caller, so reversing
+// 64 bits leaves the reversed 32-bit result in the high half; the caller
+// shifts it down for the W form.
+//
+STATIC UINT64
+DbtRbit (
+  IN UINT64  Value
+  )
+{
+  UINT64  Out;
+  UINT32  Bit;
+
+  for (Out = 0, Bit = 0; Bit < 64; Bit++) {
+    Out = (Out << 1) | (Value & 1);
+    Value >>= 1;
+  }
+
+  return Out;
+}
+
+//
+// High 64 bits of a 64x64 product, without needing a 128-bit type (the
+// library still has to compile with toolchains that lack one).
+//
+STATIC UINT64
+DbtMulHigh (
+  IN UINT64   A,
+  IN UINT64   B,
+  IN BOOLEAN  Signed
+  )
+{
+  UINT64  A0 = A & 0xFFFFFFFFULL;
+  UINT64  A1 = A >> 32;
+  UINT64  B0 = B & 0xFFFFFFFFULL;
+  UINT64  B1 = B >> 32;
+  UINT64  P0 = A0 * B0;
+  UINT64  P1 = A0 * B1;
+  UINT64  P2 = A1 * B0;
+  UINT64  P3 = A1 * B1;
+  UINT64  Mid;
+  UINT64  Hi;
+
+  Mid = (P0 >> 32) + (P1 & 0xFFFFFFFFULL) + (P2 & 0xFFFFFFFFULL);
+  Hi  = P3 + (P1 >> 32) + (P2 >> 32) + (Mid >> 32);
+
+  if (Signed) {
+    if ((INT64)A < 0) {
+      Hi -= B;
+    }
+    if ((INT64)B < 0) {
+      Hi -= A;
+    }
+  }
+
+  return Hi;
+}
+
+#define DBT_MUL_SIGNED  0x01
+#define DBT_MUL_LONG    0x02
+#define DBT_MUL_HIGH    0x04
+#define DBT_MUL_SUB     0x08
+
+//
+// MADD/MSUB/MUL/MNEG, SMADDL/SMSUBL/SMULL/SMNEGL, SMULH, UMADDL/UMSUBL/
+// UMULL/UMNEGL and UMULH.  The long forms consume the low 32 bits of the
+// operands and accumulate into a 64-bit destination; the NEG aliases are
+// simply "XZR - product", which the SUB path already provides when the
+// caller passes a zero addend.
+//
+STATIC UINT64
+DbtMultiply (
+  IN UINT64  A,
+  IN UINT64  B,
+  IN UINT64  Addend,
+  IN UINT32  Mode
+  )
+{
+  UINT64  Product;
+
+  if ((Mode & DBT_MUL_HIGH) != 0) {
+    return DbtMulHigh (A, B, (Mode & DBT_MUL_SIGNED) != 0);
+  }
+
+  if ((Mode & DBT_MUL_LONG) != 0) {
+    if ((Mode & DBT_MUL_SIGNED) != 0) {
+      //
+      // Sign-extend both 32-bit operands into 64 bits and let the unsigned
+      // multiply wrap — the low 64 bits are the same as the signed product
+      // without relying on signed-overflow behaviour.
+      //
+      Product = (UINT64)(INT64)(INT32)A * (UINT64)(INT64)(INT32)B;
+    } else {
+      Product = (UINT64)(UINT32)A * (UINT64)(UINT32)B;
+    }
+  } else {
+    Product = A * B;
+  }
+
+  if ((Mode & DBT_MUL_SUB) != 0) {
+    return Addend - Product;
+  }
+
+  return Addend + Product;
+}
+
 // =========== Single instruction translator ===========
 STATIC UINTN DbtTranslateOne (
   IN  DBT_CONTEXT *Ctx,
@@ -1522,6 +2025,152 @@ STATIC UINTN DbtTranslateOne (
   UINTN   RtOff = ArmRegXOff(Rt);
   UINTN   PcOff = ArmRegPcOff();
   UINTN   SpOff = ArmRegSpOff();
+
+  //
+  // ARMv8.1-LSE atomics, exclusive monitors and ordered accesses all live
+  // in the 110x top-level group next to LDR/STR, so they are recognised
+  // before the load/store decoder can misread them.
+  //
+  {
+    UINT32  Size   = (Inst >> 30) & 3;
+    UINT32  Bytes  = 1u << Size;
+    UINT32  Rs     = (Inst >> 16) & 0x1F;
+    UINTN   RnOffA = (Rn == 31) ? SpOff : RnOff;
+
+    //
+    // LDADD/LDCLR/LDEOR/LDSET/LDSMAX/LDSMIN/LDUMAX/LDUMIN/SWP.
+    //   opc (bits 15:12): 0..7 = the RMW operations above, 8 = SWP,
+    //   12 = LDAPR (a plain load with RCpc ordering).
+    //
+    if ((Inst & 0x3F200C00) == 0x38200000) {
+      UINT32 Opc = (Inst >> 12) & 0xF;
+
+      if (Opc == 12) {
+        DBG_ASM((DEBUG_INFO, "DBT_ASM:    LDAPR size=%u Rt=%u Rn=%u\n",
+                 Size, Rt, Rn));
+        if (Rt != 31) {
+          EmitLoadRcx(&P, (UINT32)RnOffA);
+          EmitCallMapHelper(&P);                 // RAX = host address
+          EmitMemAccess(&P, Size, 1, (Inst >> 31) & 1, (UINT32)RtOff);
+        }
+        return (UINTN)(P - X86Buf);
+      }
+
+      if (Opc <= 8) {
+        DBG_ASM((DEBUG_INFO, "DBT_ASM:    LSE opc=%u size=%u Rs=%u Rt=%u Rn=%u\n",
+                 Opc, Size, Rs, Rt, Rn));
+        EmitLoadRcx(&P, (UINT32)RnOffA);
+        EmitCallMapHelper(&P);                   // RAX = host address
+        EmitMovRcxRax(&P);                       // arg0 = host address
+        if (Rs == 31) { EmitMovImm(&P, 0); } else { EmitLoadRax(&P, (UINT32)ArmRegXOff(Rs)); }
+        EmitMovRdxRax(&P);                       // arg1 = operand
+        EmitMovR8dImm(&P, Bytes);                // arg2 = access size
+        EmitMovR9dImm(&P, Opc);                  // arg3 = operation
+        EmitMovImm(&P, (UINT64)(UINTN)DbtAtomicRmw);
+        EmitByte(&P, 0xFF); EmitByte(&P, 0xD0);  // CALL RAX
+        if (Rt != 31) {
+          EmitStoreRax(&P, (UINT32)RtOff);
+        }
+        return (UINTN)(P - X86Buf);
+      }
+    }
+
+    //
+    // CAS/CASA/CASL/CASAL.  Rs (bits 20:16) holds the expected value and
+    // receives the pre-update memory contents; Rt (bits 4:0) is the new
+    // value.  CASP (128-bit pair) is a different encoding and stays NOPped.
+    //
+    if ((Inst & 0x3FA07C00) == 0x08A07C00) {
+      DBG_ASM((DEBUG_INFO, "DBT_ASM:    CAS size=%u Rs=%u Rt=%u Rn=%u\n",
+               Size, Rs, Rt, Rn));
+      EmitLoadRcx(&P, (UINT32)RnOffA);
+      EmitCallMapHelper(&P);                     // RAX = host address
+      EmitMovRcxRax(&P);                         // arg0 = host address
+      if (Rs == 31) { EmitMovImm(&P, 0); } else { EmitLoadRax(&P, (UINT32)ArmRegXOff(Rs)); }
+      EmitMovRdxRax(&P);                         // arg1 = expected value
+      if (Rt == 31) { EmitMovImm(&P, 0); } else { EmitLoadRax(&P, (UINT32)ArmRegXOff(Rt)); }
+      EmitMovR8Rax(&P);                          // arg2 = new value
+      EmitMovR9dImm(&P, Bytes);                  // arg3 = access size
+      EmitMovImm(&P, (UINT64)(UINTN)DbtAtomicCas);
+      EmitByte(&P, 0xFF); EmitByte(&P, 0xD0);    // CALL RAX
+      if (Rs != 31) {
+        EmitStoreRax(&P, (UINT32)ArmRegXOff(Rs));
+      }
+      return (UINTN)(P - X86Buf);
+    }
+
+    //
+    // LDXR/LDAXR: load and open the exclusive monitor.
+    //
+    if ((Inst & 0x3FFF7C00) == 0x085F7C00) {
+      BOOLEAN Acquire = ((Inst >> 15) & 1) != 0;
+
+      DBG_ASM((DEBUG_INFO, "DBT_ASM:    LD%sXR size=%u Rt=%u Rn=%u\n",
+               Acquire ? "A" : "", Size, Rt, Rn));
+      EmitLoadRcx(&P, (UINT32)RnOffA);
+      EmitCallMapHelper(&P);                     // RAX = host address
+      EmitMovRcxRax(&P);                         // arg0 = host address
+      EmitMovRdxImm(&P, Bytes);                  // arg1 = access size
+      EmitMovImm(&P, (UINT64)(UINTN)DbtExclusiveLoad);
+      EmitByte(&P, 0xFF); EmitByte(&P, 0xD0);    // CALL RAX
+      if (Rt != 31) {
+        EmitStoreRax(&P, (UINT32)RtOff);
+      }
+      return (UINTN)(P - X86Buf);
+    }
+
+    //
+    // STXR/STLXR: conditionally store; the status (0 = ok, 1 = fail) goes
+    // to Ws (bits 20:16).
+    //
+    if ((Inst & 0x3FE08C00) == 0x08000C00 || (Inst & 0x3FE08C00) == 0x08008C00) {
+      BOOLEAN Release = ((Inst >> 15) & 1) != 0;
+
+      DBG_ASM((DEBUG_INFO, "DBT_ASM:    ST%sXR size=%u Rs=%u Rt=%u Rn=%u\n",
+               Release ? "L" : "", Size, Rs, Rt, Rn));
+      EmitLoadRcx(&P, (UINT32)RnOffA);
+      EmitCallMapHelper(&P);                     // RAX = host address
+      EmitMovRcxRax(&P);                         // arg0 = host address
+      if (Rt == 31) { EmitMovImm(&P, 0); } else { EmitLoadRax(&P, (UINT32)RtOff); }
+      EmitMovRdxRax(&P);                         // arg1 = value
+      EmitMovR8dImm(&P, Bytes);                  // arg2 = access size
+      EmitMovImm(&P, (UINT64)(UINTN)DbtExclusiveStore);
+      EmitByte(&P, 0xFF); EmitByte(&P, 0xD0);    // CALL RAX
+      if (Rs != 31) {
+        EmitStoreRax(&P, (UINT32)ArmRegXOff(Rs));
+      }
+      return (UINTN)(P - X86Buf);
+    }
+
+    //
+    // LDAR: ordered load.  x86 loads already carry acquire semantics.
+    //
+    if ((Inst & 0x3FFF7C00) == 0x08DF7C00) {
+      DBG_ASM((DEBUG_INFO, "DBT_ASM:    LDAR size=%u Rt=%u Rn=%u\n", Size, Rt, Rn));
+      if (Rt != 31) {
+        EmitLoadRcx(&P, (UINT32)RnOffA);
+        EmitCallMapHelper(&P);                   // RAX = host address
+        EmitMemAccess(&P, Size, 1, (Inst >> 31) & 1, (UINT32)RtOff);
+      }
+      return (UINTN)(P - X86Buf);
+    }
+
+    //
+    // STLR: ordered store.
+    //
+    if ((Inst & 0x3FFF7C00) == 0x089F7C00) {
+      DBG_ASM((DEBUG_INFO, "DBT_ASM:    STLR size=%u Rt=%u Rn=%u\n", Size, Rt, Rn));
+      EmitLoadRcx(&P, (UINT32)RnOffA);
+      EmitCallMapHelper(&P);                     // RAX = host address
+      EmitMovRcxRax(&P);                         // arg0 = host address
+      EmitMovRdxImm(&P, Bytes);                  // arg1 = access size
+      if (Rt == 31) { EmitMovImm(&P, 0); } else { EmitLoadRax(&P, (UINT32)RtOff); }
+      EmitMovR8Rax(&P);                          // arg2 = value
+      EmitMovImm(&P, (UINT64)(UINTN)DbtStoreSized);
+      EmitByte(&P, 0xFF); EmitByte(&P, 0xD0);    // CALL RAX
+      return (UINTN)(P - X86Buf);
+    }
+  }
 
   if (DBT_VERBOSE) {
     DBG_ASM((DEBUG_INFO, "DBT_ASM:  0x%llx  %08x  decode op0=%x rd=%u rn=%u rm=%u\n",
@@ -2182,6 +2831,83 @@ STATIC UINTN DbtTranslateOne (
       UINT32  RnU = (Inst >> 5) & 0x1F;
       UINT32  RmU = (Inst >> 16) & 0x1F;
       UINT32  Mask = Inst & 0xFFE0FC00;
+      UINT32  Op1  = (Inst >> 10) & 0x3F;
+
+      //
+      // Data processing (1 source): bits 30:29 = 10, bits 28:21 = 0xD6 and
+      // bits 20:16 = 00000, i.e. (Inst & 0x7FFF0000) == 0x5AC00000.  The
+      // bits 30:29 test is what separates REV/REV32 from UDIV/SDIV, whose
+      // 2-source encoding is identical in 28:21 (with bits 30:29 = 00).
+      //   opcode 0 RBIT, 1 REV16, 2 REV32(X)/REV(W), 3 REV(X)/REV32(W),
+      //   4 CLZ, 5 CLS.
+      //
+      if (((Inst & 0x7FFF0000) == 0x5AC00000) && (Op1 <= 5)) {
+        DBG_ASM((DEBUG_INFO, "DBT_ASM:    UNARY op=%u %s%d, %s%d\n",
+                 Op1, IsW ? "W" : "X", Rd, IsW ? "W" : "X", RnU));
+
+        if (RnU == 31) { EmitMovImm(&P, 0); } else { EmitLoadRax(&P, ArmRegXOff(RnU)); }
+
+        switch (Op1) {
+          case 0:   // RBIT
+            if (IsW) {
+              EmitTrunc32(&P);
+            }
+            EmitMovRcxRax(&P);                       // arg0 = value
+            EmitMovImm(&P, (UINT64)(UINTN)DbtRbit);
+            EmitByte(&P, 0xFF); EmitByte(&P, 0xD0);  // CALL RAX
+            if (IsW) {
+              EmitShrRaxImm(&P, 32);                 // 32-bit reversal lands in the high half
+            }
+            break;
+          case 1:   // REV16
+            EmitRev16(&P, IsW);
+            break;
+          case 2:   // REV32 (X) / REV (W)
+            if (IsW) { EmitRev(&P, TRUE); } else { EmitRev32(&P); }
+            break;
+          case 3:   // REV (X) / REV32 (W)
+            EmitRev(&P, IsW);
+            break;
+          case 4:   // CLZ
+            EmitClz(&P, IsW);
+            break;
+          default:  // CLS
+            EmitCls(&P, IsW);
+            break;
+        }
+
+        if (Rd != 31) {
+          EmitStoreRax(&P, ArmRegXOff(Rd));
+        }
+        return (UINTN)(P - X86Buf);
+      }
+
+      //
+      // CRC32B/H/W/X and CRC32CB/CH/CW/CX: bits 15:10 = 0b010xxx.
+      //   RCX = CRC accumulator (Xn), RDX = data (Xm), R8 = byte count,
+      //   R9 = 1 for the Castagnoli polynomial.
+      //
+      if (((Inst & 0x1FE00000) == 0x1AC00000) &&
+          (Op1 >= 0x10) && (Op1 <= 0x17)) {
+        UINT32  Bytes      = 1u << (Op1 & 3);
+        UINT32  Castagnoli = (Op1 >= 0x14) ? 1 : 0;
+
+        DBG_ASM((DEBUG_INFO, "DBT_ASM:    CRC32%s W%d, W%d, W%d (%u bytes)\n",
+                 Castagnoli ? "C" : "", Rd, RnU, RmU, Bytes));
+
+        if (RnU == 31) { EmitMovImm(&P, 0); } else { EmitLoadRax(&P, ArmRegXOff(RnU)); }
+        EmitMovRcxRax(&P);                        // arg0 = CRC accumulator
+        if (RmU == 31) { EmitMovImm(&P, 0); } else { EmitLoadRax(&P, ArmRegXOff(RmU)); }
+        EmitMovRdxRax(&P);                        // arg1 = data
+        EmitMovR8dImm(&P, Bytes);                 // arg2 = byte count
+        EmitMovR9dImm(&P, Castagnoli);            // arg3 = polynomial
+        EmitMovImm(&P, (UINT64)(UINTN)DbtCrc32);
+        EmitByte(&P, 0xFF); EmitByte(&P, 0xD0);   // CALL RAX
+        if (Rd != 31) {
+          EmitStoreRax(&P, ArmRegXOff(Rd));
+        }
+        return (UINTN)(P - X86Buf);
+      }
 
       if (Mask == 0x9AC00800 || Mask == 0x1AC00800 ||
           Mask == 0x9AC00C00 || Mask == 0x1AC00C00) {
@@ -2320,6 +3046,47 @@ STATIC UINTN DbtTranslateOne (
           return (UINTN)(P - X86Buf);
         }
       }
+    } else if (Sub == 0xD9 || Sub == 0xDA || Sub == 0xDD || Sub == 0xDE) {
+      //
+      // 3-source multiply group; the plain MADD/MSUB forms are Sub 0xD8.
+      //   D9: signed 32x32 -> 64   (SMADDL/SMSUBL/SMULL/SMNEGL)
+      //   DA: signed 64x64 high    (SMULH)
+      //   DD: unsigned 32x32 -> 64 (UMADDL/UMSUBL/UMULL/UMNEGL)
+      //   DE: unsigned 64x64 high  (UMULH)
+      //
+      UINT32  Ra    = (Inst >> 10) & 0x1F;
+      BOOLEAN IsSub = ((Inst >> 15) & 1) != 0;
+      UINT32  Mode;
+
+      if (Sub == 0xD9) {
+        Mode = DBT_MUL_SIGNED | DBT_MUL_LONG;
+      } else if (Sub == 0xDD) {
+        Mode = DBT_MUL_LONG;
+      } else if (Sub == 0xDA) {
+        Mode = DBT_MUL_SIGNED | DBT_MUL_HIGH;
+      } else {
+        Mode = DBT_MUL_HIGH;
+      }
+      if (IsSub) {
+        Mode |= DBT_MUL_SUB;
+      }
+
+      DBG_ASM((DEBUG_INFO, "DBT_ASM:    MUL3 sub=0x%x Rd=%u Rn=%u Rm=%u Ra=%u%s\n",
+               Sub, Rd, Rn, Rm, Ra, IsSub ? " (sub)" : ""));
+
+      if (Rn == 31) { EmitMovImm(&P, 0); } else { EmitLoadRax(&P, RnOff); }
+      EmitMovRcxRax(&P);                              // arg0 = multiplicand
+      if (Rm == 31) { EmitMovImm(&P, 0); } else { EmitLoadRax(&P, RmOff); }
+      EmitMovRdxRax(&P);                              // arg1 = multiplier
+      if (Ra == 31) { EmitMovImm(&P, 0); } else { EmitLoadRax(&P, ArmRegXOff(Ra)); }
+      EmitMovR8Rax(&P);                               // arg2 = addend
+      EmitMovR9dImm(&P, Mode);                        // arg3 = mode
+      EmitMovImm(&P, (UINT64)(UINTN)DbtMultiply);
+      EmitByte(&P, 0xFF); EmitByte(&P, 0xD0);         // CALL RAX
+      if (Rd != 31) {
+        EmitStoreRax(&P, RdOff);
+      }
+      return (UINTN)(P - X86Buf);
     } else if (Sub == 0xD8) {
       //
       // Data processing — 3-source (MADD/MSUB/MUL/MNEG).
@@ -2332,35 +3099,6 @@ STATIC UINTN DbtTranslateOne (
       UINT32  Ra    = (Inst >> 10) & 0x1F;
       UINT32  RaOff = (Ra == 31) ? 0 : ArmRegXOff(Ra);
       BOOLEAN IsSub = S15;
-
-      //
-      // UMULL/SMULL: Xd = Wn * Wm (32-bit inputs, 64-bit product).  Encoded
-      // in this family with sf=1 (64-bit result) and bit 21 = 0 (W inputs);
-      // the 64-bit MADD/MSUB/X forms use bit 21 = 1, the 32-bit forms
-      // sf=0.  The decoder's IsW (from sf) alone cannot tell them apart.
-      //
-      if (((Inst >> 31) & 1) && !((Inst >> 21) & 1)) {
-        BOOLEAN IsSmull = ((Inst >> 30) & 1) != 0;   // SMULL (signed) / UMULL
-
-        DBG_ASM((DEBUG_INFO, "DBT_ASM:    %sLL X%d, W%d, W%d\n",
-                 IsSmull ? "SM" : "UM", Rd, Rn, Rm));
-        if (Rn == 31) { EmitMovImm(&P, 0); } else { EmitLoadRax(&P, RnOff); }
-        EmitTrunc32(&P);                                     // Wn (32-bit)
-        if (Rm == 31) { EmitMovImm(&P, 0); } else { EmitLoadRcx(&P, RmOff); }
-        EmitByte(&P, 0x89); EmitByte(&P, 0xC9);              // MOV ECX, ECX
-        if (IsSmull) {
-          EmitRexW(&P); EmitByte(&P, 0x0F); EmitByte(&P, 0xAF); EmitByte(&P, 0xC8);  // IMUL RAX, RAX, ECX? no —
-          // signed 32x32 -> 64: MOVSXD twice then IMUL
-          EmitRexW(&P); EmitByte(&P, 0x63); EmitByte(&P, 0xC8);  // MOVSXD RCX, EAX
-          EmitRexW(&P); EmitByte(&P, 0x63); EmitByte(&P, 0xC0);  // MOVSXD RAX, EAX
-          EmitRexW(&P); EmitByte(&P, 0x0F); EmitByte(&P, 0xAF); EmitByte(&P, 0xC1);  // IMUL RAX, RCX
-        } else {
-          EmitImulRaxRcx(&P);                                  // unsigned: zero-extended inputs
-        }
-        if (Rd != 31) EmitStoreRax(&P, RdOff);
-        EmitNop(&P);
-        return (UINTN)(P - X86Buf);
-      }
 
       DBG_ASM((DEBUG_INFO, "DBT_ASM:    %s %s%d, %s%d, %s%d, %s%d\n",
                IsSub ? "MSUB" : "MADD", IsW ? "W" : "X", Rd,
@@ -2518,6 +3256,29 @@ STATIC UINTN DbtTranslateOne (
       // NOP them so the trace keeps stepping instead of a silent stall.
       if (IsMsr && (((Inst >> 19) & 0x3) == 0)) {
         STATIC BOOLEAN DbtHintLogged = FALSE;
+        UINT32          HintCrn = (Inst >> 12) & 0xF;
+        UINT32          HintCrm = (Inst >> 8) & 0xF;
+        UINT32          HintOp2 = (Inst >> 5) & 7;
+
+        //
+        // DMB/DSB/ISB share the hint space (CRn=3, CRm=15, op2 5/4/6).
+        // x86 is TSO, so DMB and DSB reduce to a full fence and ISB to a
+        // load fence.  WFI/WFE/SEV/YIELD/BTI/SB stay NOPs: the single-vCPU
+        // guest must never actually sleep.
+        //
+        if ((HintCrn == 3) && (HintCrm == 0xF) &&
+            ((HintOp2 == 4) || (HintOp2 == 5) || (HintOp2 == 6))) {
+          if (HintOp2 == 6) {
+            DBG_ASM((DEBUG_INFO, "DBT_ASM:    ISB -> LFENCE\n"));
+            EmitLfence(&P);
+          } else {
+            DBG_ASM((DEBUG_INFO, "DBT_ASM:    %s -> MFENCE\n",
+                     HintOp2 == 5 ? "DMB" : "DSB"));
+            EmitMfence(&P);
+          }
+          return (UINTN)(P - X86Buf);
+        }
+
         if (!DbtHintLogged) {
           DbtHintLogged = TRUE;
           DBG((DEBUG_INFO, "DBT_SYS: hint-enc op %08x -> NOP (WFI/WFE/SEV)\n", Inst));
@@ -2846,44 +3607,10 @@ if (Opt == 2 || Opt == 6 || Opt == 3) {
           return (UINTN)(P - X86Buf);
         }
         //
-        // Atomic read-modify-write: LDADD/LDCLR/LDEOR/LDSET Wt, Ws, [Xn].
-        // bit21=1 with Opt in {0,1,4,5,7}, A (bits 23:22) = 0 ADD, 1 CLR,
-        // 2 EOR, 3 SET.  Rm is the source value (Ws), Rt the return (old).
-        // Emulate as load -> compute -> store (single-threaded here).
+        // LSE atomics (LDADD/LDCLR/... and SWP) and CAS are recognised by
+        // the top-level interception block in DbtTranslateOne, so the only
+        // register-offset forms that reach here are plain LDR/STR.
         //
-        if (Opt == 0 || Opt == 1 || Opt == 4 || Opt == 5 || Opt == 7) {
-          UINT32 Ar = (Inst >> 22) & 3;
-          UINT8  Rs = (Inst >> 16) & 0x1F;
-
-          DBG_ASM((DEBUG_INFO, "DBT_ASM:    ATOMIC %s W%d, W%d, [X%d]\n",
-                   Ar == 0 ? "LDADD" : Ar == 1 ? "LDCLR"
-                   : Ar == 2 ? "LDEOR" : "LDSET", Rt, Rs, Rn));
-
-          EmitLoadRcx(&P, RnOffL);              // RCX = [Rn] (guest address)
-          EmitCallMapHelper(&P);                // RAX = host address
-          EmitByte(&P, 0x50);                   // PUSH RAX (host)
-          if (Size == 0) { EmitByte(&P, 0x0F); EmitByte(&P, 0xB6); EmitByte(&P, 0x00); }  // MOVZX EAX, [RAX]
-          else if (Size == 1) { EmitByte(&P, 0x0F); EmitByte(&P, 0xB7); EmitByte(&P, 0x00); }  // MOVZX EAX, [RAX]
-          else if (Size == 2) { EmitByte(&P, 0x8B); EmitByte(&P, 0x00); }  // MOV EAX, [RAX]
-          else { EmitRexW(&P); EmitByte(&P, 0x8B); EmitByte(&P, 0x00); }  // MOV RAX, [RAX]
-          EmitByte(&P, 0x50);                   // PUSH RAX (old value)
-          if (Rs == 31) { EmitMovImm(&P, 0); } else { EmitLoadRcx(&P, ArmRegXOff(Rs)); }
-          if (Size == 0) { EmitByte(&P, 0x89); EmitByte(&P, 0xC9); }  // MOV ECX, ECX (zero-extend)
-          if (Ar == 0) { EmitAddRaxRcx(&P); }                          // ADD
-          else if (Ar == 1) { EmitNotRcx(&P); EmitAndRaxRcx(&P); }     // CLR: old & ~v
-          else if (Ar == 2) { EmitXorRaxRcx(&P); }                     // EOR
-          else { EmitOrRaxRcx(&P); }                                   // SET: old | v
-          if (Size == 0) { EmitTrunc32(&P); }
-          EmitByte(&P, 0x59);                   // POP RCX (old)
-          EmitByte(&P, 0x5A);                   // POP RDX (host)
-          if (Size == 0) { EmitByte(&P, 0x88); EmitByte(&P, 0x0A); }  // MOV [RDX], AL
-          else if (Size == 1) { EmitByte(&P, 0x66); EmitByte(&P, 0x89); EmitByte(&P, 0x0A); }  // MOV [RDX], AX
-          else if (Size == 2) { EmitByte(&P, 0x89); EmitByte(&P, 0x0A); }  // MOV [RDX], EAX
-          else { EmitRexW(&P); EmitByte(&P, 0x89); EmitByte(&P, 0x0A); }  // MOV [RDX], RAX
-          EmitRexW(&P); EmitByte(&P, 0x89); EmitByte(&P, 0xC8);   // MOV RAX, RCX (old)
-          EmitStoreRax(&P, RtOff);              // Wt = old value
-          return (UINTN)(P - X86Buf);
-        }
         DBG_ASM((DEBUG_INFO, "DBT_ASM:    Reg-offset (opc=%d opt=%d) -> NOP\n", Opc, Opt));
       } else {
         DBG_ASM((DEBUG_INFO, "DBT_ASM:    Reg-offset (opc=%d) -> NOP\n", Opc));

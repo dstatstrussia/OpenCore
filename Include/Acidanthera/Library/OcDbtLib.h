@@ -430,6 +430,40 @@ DbtGpuRegWrite (
   );
 
 //
+// AMD RDNA2 "Rembrandt" (Radeon 680M) handoff, ported from Stela's
+// feat/amdgpu-680m branch (crates/stela-driver-gpu/src/rembrandt.rs and
+// crates/stela-boot/src/engine/gpu.rs).  The 680M is the only GPU Stela's
+// RADV gate accepts: 1002:1681, "Yellow Carp", GMC v10 with a 44-bit DMA
+// window, VRAM size reported in mmRCC_CONFIG_MEMSIZE (BAR5 + 0x378C) and
+// eleven amdgpu/yellow_carp_* firmware images.
+//
+#define DBT_AMD_VENDOR_ID                 0x1002
+#define DBT_AMD_REMBRANDT_680M_DEVICE_ID  0x1681
+#define DBT_AMD_REMBRANDT_BAR_REGS        5
+#define DBT_AMD_REMBRANDT_VRAM_SIZE_REG   0x378C
+#define DBT_AMD_REMBRANDT_DMA_LIMIT       (((UINT64)1 << 44) - 1)
+#define DBT_AMD_REMBRANDT_FIRMWARE_COUNT  11
+
+DBT_PCI_DEVICE *
+DbtAmdFindRembrandt (
+  IN DBT_CONTEXT  *Context
+  );
+
+EFI_STATUS
+DbtAmdPrepareRembrandt (
+  IN  DBT_CONTEXT  *Context,
+  IN  UINTN         DeviceIndex,
+  IN  UINT64        VramBase,
+  IN  UINTN         VramSize,
+  OUT UINT32       *VramMiB      OPTIONAL
+  );
+
+CONST CHAR8 *CONST *
+DbtAmdRembrandtFirmware (
+  OUT UINTN  *Count       OPTIONAL
+  );
+
+//
 // GPU compute / RT-core ray query instruction emulation
 //
 BOOLEAN

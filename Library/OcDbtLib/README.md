@@ -1,11 +1,14 @@
 # OcDbtLib — Enhanced Dynamic Binary Translation Library
 
 Dynamic Binary Translation (ARM64 → x86_64) library for OpenCore, extended
-additively with concepts ported from two projects:
+additively with concepts ported from three projects:
 
 1. **Stela** (https://github.com/tylertms/Stela) — modern Rust DBT engine:
    block caching, AOT manifest concepts, PAC/SVE state, block profiles.
-2. **nullmoth/nvidia-macos-driver** (https://github.com/nullmoth/nvidia-macos-driver)
+2. **Stela, `feat/amdgpu-680m` branch** (https://github.com/SaKongA/Stela) —
+   RDNA2 "Rembrandt" 680M bring-up: PCI decode, VRAM sizing, GMC v10 DMA
+   window and the Yellow Carp firmware set.
+3. **nullmoth/nvidia-macos-driver** (https://github.com/nullmoth/nvidia-macos-driver)
    — Metal driver stack for NVIDIA GeForce on macOS Sequoia: PCI/BAR
    management, GSP firmware bring-up, HWRT ray-query scoreboards, sleep/wake,
    loop-budget instrumentation and OpenCore quirks.
@@ -61,6 +64,59 @@ BOOLEAN          DbtEmulateRayQuery (State, Inst, Ctx);
 `EFI_SIMPLE_FILE_SYSTEM_PROTOCOL` and stages it into the host-backed BAR1
 aperture, mirroring how the NVRM kext presents the GSP firmware during
 adapter init.
+
+### AMD Radeon 680M handoff (Stela `feat/amdgpu-680m`)
+
+```c
+DBT_PCI_DEVICE  *DbtAmdFindRembrandt (Ctx);
+EFI_STATUS       DbtAmdPrepareRembrandt (Ctx, DeviceIndex, VramBase, VramSize, &VramMiB);
+CONST CHAR8 *CONST *DbtAmdRembrandtFirmware (&Count);
+```
+
+`DbtAmdPrepareRembrandt` accepts only PCI `1002:1681` (Radeon 680M,
+"Yellow Carp"), turns on memory decoding and bus mastering the way Linux's
+`pci_enable_device` does, requires the register BAR (BAR5) to be assigned,
+maps the VRAM aperture into a host-backed buffer, and records the GPU
+identity in `DBT_ARM64_STATE`. The constants it uses mirror Stela:
+
+| Constant | Value | Meaning |
+|----------|-------|---------|
+| `DBT_AMD_REMBRANDT_680M_DEVICE_ID` | `0x1681` | The only device the RADV gate accepts |
+| `DBT_AMD_REMBRANDT_BAR_REGS` | `5` | Register BAR |
+| `DBT_AMD_REMBRANDT_VRAM_SIZE_REG` | `0x378C` | `mmRCC_CONFIG_MEMSIZE` (`0x0de3` dwords) |
+| `DBT_AMD_REMBRANDT_DMA_LIMIT` | `2^44 - 1` | GMC v10 DMA mask |
+| `DBT_AMD_REMBRANDT_FIRMWARE_COUNT` | `11` | Yellow Carp firmware images |
+
+`DbtAmdRembrandtFirmware` returns the eleven `amdgpu/yellow_carp_*.bin`
+names in the order the kernel requests them, so a boot service can stage
+them into the guest firmware volume without hard-coding the list.
+
+### Instruction-set coverage added to the translator
+
+The engine now decodes the ARMv8.1/LSE and CRC extensions that the kernel
+and kexts execute during early boot:
+
+- **Atomics** — `LDADD`/`LDCLR`/`LDEOR`/`LDSET`/`LDSMAX`/`LDSMIN`/
+  `LDUMAX`/`LDUMIN`/`SWP` (all sizes, all orderings), `CAS`/`CASA`/
+  `CASL`/`CASAL`, and `LDAPR`.
+- **Exclusives** — `LDXR`/`LDAXR` and `STXR`/`STLXR`, with a real monitor
+  (`DbtExclusiveLoad`/`DbtExclusiveStore`, compare-exchange backed).
+- **Ordered accesses** — `LDAR`/`STLR` (x86 TSO provides the ordering).
+- **Multiplies** — `MADD`/`MSUB`/`MUL`/`MNEG` plus the formerly unreachable
+  `SMADDL`/`SMSUBL`/`SMULL`/`SMNEGL`/`SMULH`/`UMADDL`/`UMSUBL`/`UMULL`/
+  `UMNEGL`/`UMULH` group.
+- **Bit manipulation** — `RBIT`, `REV`, `REV16`, `REV32`, `CLZ`, `CLS`.
+- **Checksums** — `CRC32B/H/W/X` and `CRC32CB/CH/CW/CX`.
+- **Barriers** — `DMB`/`DSB` → `MFENCE`, `ISB` → `LFENCE`; `WFI`/`WFE`/
+  `SEV`/`BTI` remain NOPs for the single-vCPU guest.
+
+Multiply, CRC, RBIT, atomics and the exclusive monitor are small C helpers
+called from the JIT (MS x64 ABI: RCX, RDX, R8, R9); `CLZ`/`CLS`/`REV`/
+`REV16`/`REV32` are emitted inline (`BSR`, `BSWAP`, masks). The encodings
+and masks were verified against `clang --target=aarch64-unknown-none`
+output, and the helpers are covered by host-side vector tests (CRC32 and
+CRC32C check values, `SMULH`/`UMULH` against a 128-bit reference, RMW and
+CAS semantics).
 
 ### Scoreboards (HWRT-inspired)
 
@@ -165,12 +221,32 @@ DbtSetLoopBudget (Ctx, DBT_DEFAULT_LOOP_BUDGET);
 /* boot the kernel through the standard DbtSetSegments/DbtExecute flow */
 ```
 
+## Example: AMD Radeon 680M bring-up (abridged)
+
+```c
+DbtInitContext (&Ctx, 0x200000);
+
+DbtPciRegisterDevice (Ctx, 0x1002, 0x1681, 0x03, 0x00, 0x00, 0xC1, 0, 2, 0);
+/* BAR5 (registers) is assigned by the caller's PCI scan. */
+DbtPciMapBar (Ctx, 0, DBT_AMD_REMBRANDT_BAR_REGS, 0xF0100000ULL, 0x80000ULL, NULL);
+
+UINT32 VramMiB;
+Status = DbtAmdPrepareRembrandt (Ctx, 0, 0xF800000000ULL, 0x40000000ULL, &VramMiB);
+if (EFI_ERROR (Status)) {
+  /* not a 680M, or the register BAR is unassigned */
+}
+
+UINTN Count;
+CONST CHAR8 *CONST *Names = DbtAmdRembrandtFirmware (&Count);  /* 11 images */
+```
+
 Full reference flows: `DbtBootExample.c` and `DbtNvidiaGpuExample.c`
 (documentation-only; excluded from `[Sources]`).
 
 ## References
 
 - Stela — https://github.com/tylertms/Stela
+- Stela, `feat/amdgpu-680m` — https://github.com/SaKongA/Stela/tree/feat/amdgpu-680m
 - nullmoth/nvidia-macos-driver — https://github.com/nullmoth/nvidia-macos-driver
 - NVIDIA open-gpu-kernel-modules — https://github.com/NVIDIA/open-gpu-kernel-modules
 - ARM ARMv8-A Architecture Reference Manual (PAC, SVE)

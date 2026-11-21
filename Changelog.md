@@ -1,5 +1,35 @@
 OpenCore Changelog
 ==================
+#### Fork additions (dstatstrussia)
+- Added `OpenDbvX64Dxe` boot entry driver providing a direct kernel boot path for
+  macOS 27 (Golden Gate) installers on x86_64 firmware: ARM64 kernels run on the
+  dynamic binary translation engine, x86_64 kernels start natively
+- Added `OcDbtLib`, an ARM64 to x86_64 dynamic binary translation library with
+  block caching, system register emulation, MMIO/PCIe host layer, per-CPU slots and
+  phys windows, plus additive Stela-inspired profiling and
+  nullmoth/nvidia-macos-driver-inspired PCI/BAR, GPU, scoreboard and sleep/wake APIs
+- Added ARMv8.1/LSE instruction coverage to the `OcDbtLib` translator: LSE atomics
+  (`LDADD`/`LDCLR`/`LDEOR`/`LDSET`/`LDSMAX`/`LDSMIN`/`LDUMAX`/`LDUMIN`/`SWP`,
+  `CAS` family, `LDAPR`), a real exclusive monitor for `LDXR`/`STXR`,
+  `LDAR`/`STLR`, the long and high multiply group (`SMADDL`/`SMULL`/`SMULH`/
+  `UMADDL`/`UMULL`/`UMULH` and negatives), `RBIT`/`REV`/`REV16`/`REV32`/`CLZ`/
+  `CLS`, `CRC32`/`CRC32C` and `DMB`/`DSB`/`ISB` barriers; fixed the unreachable
+  `SMULL`/`UMULL` decode
+- Added AMD Radeon 680M (`1002:1681`, Yellow Carp) handoff to `OcDbtLib`,
+  ported from Stela's `feat/amdgpu-680m` branch: PCI decode, bus mastering, VRAM
+  sizing from `mmRCC_CONFIG_MEMSIZE`, the GMC v10 44-bit DMA window and the eleven
+  Yellow Carp firmware images
+- Added detection of macOS 27 ARM64 `boot.efi` installers and MobileAsset,
+  SharedSupport and dyld shared cache layouts in the installer boot action
+- Added Apple Silicon SMBIOS models: `MacBookAir10,1`, `MacBookPro17,1`,
+  `Macmini9,1`, `iMac21,1` and `iMac21,2`
+- Added macOS 27 (Golden Gate) kernel version constants and initialisation in
+  `OcAppleKernelLib`
+- Replaced `ASSERT`s with runtime checks in the variable subsystem and bounded
+  Apple performance buffer parsing in `OcLogAggregatorLib`
+- Improved GCC/Clang and CI compatibility, including Linux Docker builds and NASM
+  discovery in the official Windows installer
+
 #### v1.0.9
 - Made pressed buttons darker instead of highlighting them in OpenCanopy, thx @ilikesn0w
 - Added minor configuration sample improvements, thx @ilikesn0w

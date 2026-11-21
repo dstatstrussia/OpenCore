@@ -1129,3 +1129,145 @@ DbtDumpScoreboards (
           Ctx->Scoreboards[Index].SignalMask != 0));
   }
 }
+
+// =========== AMD RDNA2 "Rembrandt" 680M (Stela amdgpu-680m) ===========
+//
+// Stela's feat/amdgpu-680m branch drives the integrated Radeon 680M by
+// claiming PCI 1002:1681 ("Yellow Carp"), enabling memory decoding and bus
+// mastering exactly as Linux's pci_enable_device does, sizing VRAM from
+// mmRCC_CONFIG_MEMSIZE (BAR5 + 0x0de3 * 4) and advertising GMC v10's
+// 44-bit DMA window.  The kernel then loads the eleven Yellow Carp firmware
+// images below through the amdgpu firmware interface.
+//
+// The DBT keeps the same model: the register BAR stays a trapped MMIO
+// window owned by the caller, while the VRAM aperture becomes a
+// host-backed buffer so translated guest accesses land in deterministic
+// memory.
+//
+
+STATIC CONST CHAR8 *CONST mDbtAmdRembrandtFirmware[DBT_AMD_REMBRANDT_FIRMWARE_COUNT] = {
+  "amdgpu/yellow_carp_ce.bin",
+  "amdgpu/yellow_carp_dmcub.bin",
+  "amdgpu/yellow_carp_me.bin",
+  "amdgpu/yellow_carp_mec.bin",
+  "amdgpu/yellow_carp_mec2.bin",
+  "amdgpu/yellow_carp_pfp.bin",
+  "amdgpu/yellow_carp_rlc.bin",
+  "amdgpu/yellow_carp_sdma.bin",
+  "amdgpu/yellow_carp_ta.bin",
+  "amdgpu/yellow_carp_toc.bin",
+  "amdgpu/yellow_carp_vcn.bin"
+};
+
+DBT_PCI_DEVICE *
+DbtAmdFindRembrandt (
+  IN DBT_CONTEXT  *Ctx
+  )
+{
+  return DbtPciFindDevice (Ctx, DBT_AMD_VENDOR_ID, DBT_AMD_REMBRANDT_680M_DEVICE_ID);
+}
+
+CONST CHAR8 *CONST *
+DbtAmdRembrandtFirmware (
+  OUT UINTN  *Count       OPTIONAL
+  )
+{
+  if (Count != NULL) {
+    *Count = DBT_AMD_REMBRANDT_FIRMWARE_COUNT;
+  }
+
+  return mDbtAmdRembrandtFirmware;
+}
+
+EFI_STATUS
+DbtAmdPrepareRembrandt (
+  IN  DBT_CONTEXT  *Ctx,
+  IN  UINTN         DeviceIndex,
+  IN  UINT64        VramBase,
+  IN  UINTN         VramSize,
+  OUT UINT32       *VramMiB      OPTIONAL
+  )
+{
+  DBT_PCI_DEVICE  *Pci;
+
+  if (Ctx == NULL || DeviceIndex >= Ctx->PciDeviceCount) {
+    return EFI_INVALID_PARAMETER;
+  }
+
+  Pci = &Ctx->PciDevices[DeviceIndex];
+  if (Pci->VendorId != DBT_AMD_VENDOR_ID
+      || Pci->DeviceId != DBT_AMD_REMBRANDT_680M_DEVICE_ID) {
+    DBG ((DEBUG_WARN, "DBT_AMD: %04x:%04x is not a Rembrandt 680M\n",
+          Pci->VendorId, Pci->DeviceId));
+    return EFI_UNSUPPORTED;
+  }
+
+  if (Pci->ClassCode != 0x03) {
+    DBG ((DEBUG_WARN, "DBT_AMD: %04x:%04x has class %02x, not a display device\n",
+          Pci->VendorId, Pci->DeviceId, Pci->ClassCode));
+  }
+
+  if (Pci->BarSizes[DBT_AMD_REMBRANDT_BAR_REGS] == 0) {
+    DBG ((DEBUG_WARN, "DBT_AMD: register BAR%u is not assigned\n",
+          (UINT32)DBT_AMD_REMBRANDT_BAR_REGS));
+    return EFI_NOT_READY;
+  }
+
+  //
+  // Linux's pci_enable_device: decoding and DMA must be live before any
+  // register is touched, otherwise every read comes back as all ones.
+  //
+  if (!Pci->MemorySpaceEnabled) {
+    DbtPciSetMemorySpace (Ctx, DeviceIndex, TRUE);
+  }
+  if (!Pci->BusMasterEnabled) {
+    DbtPciSetBusMaster (Ctx, DeviceIndex, TRUE);
+  }
+
+  if (VramSize == 0) {
+    DBG ((DEBUG_WARN, "DBT_AMD: VRAM aperture has zero size\n"));
+    return EFI_INVALID_PARAMETER;
+  }
+
+  if (Pci->Bar1HostBuffer != NULL) {
+    FreePool (Pci->Bar1HostBuffer);
+    Pci->Bar1HostBuffer = NULL;
+  }
+
+  Pci->Bar1HostBuffer = AllocateZeroPool (VramSize);
+  if (Pci->Bar1HostBuffer == NULL) {
+    return EFI_OUT_OF_RESOURCES;
+  }
+
+  //
+  // Publish the aperture through the same accessors the GPU layer uses, so
+  // DbtGpuRegRead/DbtGpuRegWrite reach the host-backed video memory.
+  //
+  Pci->Bars[1]     = VramBase;
+  Pci->BarSizes[1] = VramSize;
+
+  Ctx->ArmState.GpuBar1Base = VramBase;
+  Ctx->ArmState.GpuBar1Size = VramSize;
+  Ctx->ArmState.GpuVendorId = DBT_AMD_VENDOR_ID;
+  Ctx->ArmState.GpuDeviceId = DBT_AMD_REMBRANDT_680M_DEVICE_ID;
+  Ctx->ArmState.GpuClassCode = ((UINT32)Pci->ClassCode << 16)
+                             | ((UINT32)Pci->SubClass << 8)
+                             | (UINT32)Pci->ProgIf;
+  Ctx->ArmState.GpuRevisionId = Pci->RevisionId;
+
+  //
+  // The register BAR stays owned by the caller's PCI scan; the VRAM
+  // aperture is host memory and is intentionally not registered as an MMIO
+  // trap, so a later DbtPcieBarMap cannot collide with it.
+  //
+  if (VramMiB != NULL) {
+    *VramMiB = (UINT32)(VramSize >> 20);
+  }
+
+  DBG ((DEBUG_INFO,
+        "DBT_AMD: Rembrandt 680M ready: VRAM %u MiB @0x%llx, register BAR%u, DMA limit 0x%llx, %u firmware images\n",
+        (UINT32)(VramSize >> 20), VramBase, (UINT32)DBT_AMD_REMBRANDT_BAR_REGS,
+        DBT_AMD_REMBRANDT_DMA_LIMIT, (UINT32)DBT_AMD_REMBRANDT_FIRMWARE_COUNT));
+
+  return EFI_SUCCESS;
+}

@@ -6598,6 +6598,11 @@ even cause permanent firmware damage. Some of the known drivers are listed below
   within the firmware may be more favourable in case a NVMe SSD drive is installed. \\
 \href{https://github.com/acidanthera/OpenCorePkg}{\texttt{OpenCanopy}}\textbf{*}
 & \hyperref[ueficanopy]{OpenCore plugin} implementing graphical interface. \\
+\href{https://github.com/dstatstrussia/OpenCore}{\texttt{OpenDbvX64Dxe}}\textbf{*}
+& \hyperref[opendbvx64]{OpenCore plugin} implementing \texttt{OC\_BOOT\_ENTRY\_PROTOCOL}
+  and a direct kernel boot path for macOS~27 (Golden Gate) installers on x86\_64
+  firmware. ARM64 kernels are executed through dynamic binary translation,
+  x86\_64 kernels are started natively. \\
 \href{https://github.com/acidanthera/OpenCorePkg}{\texttt{OpenRuntime}}\textbf{*}
 & \hyperref[uefiruntime]{OpenCore plugin} implementing \texttt{OC\_FIRMWARE\_RUNTIME} protocol. \\
 \href{https://github.com/acidanthera/OpenCorePkg}{\texttt{OpenLegacyBoot}}\textbf{*}
@@ -6834,6 +6839,165 @@ functioning. Feature highlights:
   \item UEFI Runtime Services memory protection management to workaround read-only
   mapping (e.g. \texttt{EnableWriteUnprotector}).
 \end{itemize}
+
+\subsection{OpenDbvX64Dxe}\label{opendbvx64}
+
+OpenDbvX64Dxe is an OpenCore plugin implementing \texttt{OC\_BOOT\_ENTRY\_PROTOCOL}.
+It provides a direct kernel boot path for macOS~27 (Golden Gate) installation media
+on x86\_64 firmware. Such media ship an ARM64 \texttt{boot.efi}, optionally an ARM64
+kernel or kernelcache in \texttt{SharedSupport} or in a MobileAsset directory, and
+cannot be started with UEFI \texttt{LoadImage}. The driver detects the media,
+publishes a single \texttt{macOS Installer (Translated)} entry in the boot picker and
+boots the kernel itself:
+
+\begin{itemize}
+\tightlist
+  \item ARM64 kernels are executed through the \texttt{OcDbtLib} dynamic binary
+  translation engine, which translates ARM64 code to the x86\_64 host.
+  \item x86\_64 kernels, for example the kernel cache in
+  \texttt{System\textbackslash Library\textbackslash Kernels} or a shared cache layout,
+  are started natively after switching page tables and calling
+  \texttt{ExitBootServices}.
+\end{itemize}
+
+Usage:
+
+\begin{itemize}
+\tightlist
+  \item Add \texttt{OpenDbvX64Dxe.efi} to the \texttt{Drivers} section of
+  \texttt{config.plist}.
+  \item Boot the macOS~27 installer as usual. When the media contain an ARM64 boot
+  loader or a discoverable kernel, a \texttt{macOS Installer (Translated)} entry
+  appears. Select it to load and run the kernel.
+\end{itemize}
+
+The driver installs the \texttt{OC\_DBT\_FALLBACK\_PROTOCOL\_GUID} protocol so that
+other boot entry actions can hand control to the translated boot path. While it runs,
+the driver raises the on-screen and file log level to maximum regardless of the
+\texttt{Logging} and \texttt{DisplayLevel} settings. All driver messages are prefixed
+with \texttt{DBT:} or \texttt{DirectKernel:}.
+
+\subsubsection{Detection}\label{opendbvx64detect}
+
+A boot entry is added when any of the following is found on a volume:
+
+\begin{itemize}
+\tightlist
+  \item \texttt{System\textbackslash Library\textbackslash CoreServices\textbackslash com.apple.installer};
+  \item \texttt{SharedSupport\textbackslash com\_apple\_MobileAsset\_MacSoftwareUpdate};
+  \item \texttt{System\textbackslash Library\textbackslash dyld} containing a
+  \texttt{shared\_cache.x86\_64h} or \texttt{shared\_cache.x86\_64} file;
+  \item a \texttt{kernel} or \texttt{kernelcache} file in the installer or
+  \texttt{SharedSupport} layouts, including kernels packed in ZIP archives;
+  \item an ARM64 \texttt{boot.efi}.
+\end{itemize}
+
+When the kernel is located on a separate \texttt{SharedSupport} volume, the driver
+binds that volume to the boot entry automatically. If no kernel is bound at boot
+time, every file system is probed once more before the entry starts.
+
+\subsubsection{Limitations}\label{opendbvx64limits}
+
+\begin{itemize}
+\tightlist
+  \item The driver is intended for macOS~27 installer media, not as a general
+  purpose ARM64 emulator. Translation covers the code paths the xnu kernel executes
+  during early boot; unsupported instructions stop the boot with a \texttt{DBT:}
+  diagnostic in the log.
+  \item NEON/SIMD state is not fully emulated. The boot path patches known NEON
+  loops, such as the kernel \texttt{strlen}, and relies on scalar execution.
+  \item ARM64 kernels are loaded into a host buffer below 1~GB and are given
+  host-backed windows for low guest physical memory and per-CPU slots. The resulting
+  memory map differs from native firmware and is not suitable for hibernation or for
+  booting an already installed system.
+  \item The verbose log level cannot be disabled from \texttt{config.plist} while
+  the driver is loaded.
+\end{itemize}
+
+\subsubsection{Troubleshooting}\label{opendbvx64debug}
+
+\begin{itemize}
+\tightlist
+  \item If no \texttt{macOS Installer (Translated)} entry appears, verify that
+  \texttt{OpenDbvX64Dxe.efi} is present in \texttt{UEFI/Drivers} and not disabled,
+  and that the installer volume contains one of the structures listed in
+  \hyperref[opendbvx64detect]{Detection}. The driver returns \texttt{EFI\_NOT\_FOUND}
+  for unrelated volumes, which is normal.
+  \item Enable info level logging:
+  \texttt{Misc} $\rightarrow$ \texttt{Debug} $\rightarrow$ \texttt{Target}
+  $=$ \texttt{0x43}, and inspect the \texttt{DBT:} lines. The scan reports every
+  probed path and the resolved kernel.
+  \item Boot failures report the last guest \texttt{PC}, \texttt{SP}, \texttt{LR} and
+  argument registers. Provide these lines when reporting an issue, together with the
+  installer build number.
+\end{itemize}
+
+\subsubsection{Instruction Coverage}\label{opendbvx64isa}
+
+The translator decodes the ARMv8.1 atomic, CRC and bit-manipulation extensions that
+the xnu kernel and its kexts execute during early boot. Where a sequence would be
+long or variable-length on x86\_64, the generated code calls a small helper written
+in C using the Microsoft x86\_64 calling convention.
+
+\begin{itemize}
+\tightlist
+  \item Atomics: \texttt{LDADD}, \texttt{LDCLR}, \texttt{LDEOR}, \texttt{LDSET},
+  \texttt{LDSMAX}, \texttt{LDSMIN}, \texttt{LDUMAX}, \texttt{LDUMIN} and
+  \texttt{SWP} in all access sizes and orderings, \texttt{CAS} and its
+  \texttt{CASA}, \texttt{CASL}, \texttt{CASAL}, \texttt{CASB} and \texttt{CASH}
+  forms, and \texttt{LDAPR}. Each is a real locked read-modify-write on the host,
+  so the single-vCPU guest keeps the semantics of the ARM memory model.
+  \item Exclusives: \texttt{LDXR}, \texttt{LDAXR}, \texttt{STXR} and
+  \texttt{STLXR} backed by an address-tagged monitor implemented with a host
+  compare-exchange, so a store only succeeds when the monitor still matches.
+  \item Ordered accesses: \texttt{LDAR} and \texttt{STLR}; the x86\_64 TSO memory
+  model already provides the required ordering.
+  \item Multiplies: \texttt{MADD}, \texttt{MSUB}, \texttt{MUL} and \texttt{MNEG},
+  together with \texttt{SMADDL}, \texttt{SMSUBL}, \texttt{SMULL},
+  \texttt{SMNEGL}, \texttt{SMULH}, \texttt{UMADDL}, \texttt{UMSUBL},
+  \texttt{UMULL}, \texttt{UMNEGL} and \texttt{UMULH}.
+  \item Bit manipulation: \texttt{RBIT}, \texttt{REV}, \texttt{REV16},
+  \texttt{REV32}, \texttt{CLZ} and \texttt{CLS}; \texttt{CLZ} and \texttt{CLS}
+  are emitted as \texttt{BSR} plus a conditional move, and the byte reversals as
+  \texttt{BSWAP} or mask-and-shift sequences.
+  \item Checksums: \texttt{CRC32B/H/W/X} and \texttt{CRC32CB/CH/CW/CX}, using the
+  IEEE and Castagnoli polynomials respectively.
+  \item Barriers: \texttt{DMB} and \texttt{DSB} become \texttt{MFENCE},
+  \texttt{ISB} becomes \texttt{LFENCE}. \texttt{WFI}, \texttt{WFE},
+  \texttt{SEV} and \texttt{BTI} remain no-ops because the guest must never
+  actually sleep on the single-vCPU host.
+\end{itemize}
+
+\subsubsection{AMD Radeon 680M Support}\label{opendbvx64amd}
+
+The library carries the RDNA2 \texttt{Rembrandt} handoff introduced for the
+\texttt{feat/amdgpu-680m} branch of Stela. \texttt{DbtAmdPrepareRembrandt} accepts
+only the integrated Radeon 680M (\texttt{1002:1681}, ``Yellow Carp''), enables
+memory decoding and bus mastering the way Linux's \texttt{pci\_enable\_device} does,
+requires the register BAR (BAR5) to be assigned, and maps the VRAM aperture into a
+host-backed buffer. The GPU identity is recorded in the translated CPU state so the
+guest driver sees a consistent adapter.
+
+\begin{itemize}
+\tightlist
+  \item \texttt{DbtAmdFindRembrandt} locates the device in the registered PCI table.
+  \item \texttt{DbtAmdPrepareRembrandt} validates the device, prepares the aperture and
+  optionally reports its size in MiB.
+  \item \texttt{DbtAmdRembrandtFirmware} returns the eleven
+  \texttt{amdgpu/yellow\_carp\_*.bin} image names in the order the kernel requests
+  them, so they can be staged into the guest firmware volume without duplicating the
+  list.
+\end{itemize}
+
+The associated constants are \texttt{DBT\_AMD\_REMBRANDT\_680M\_DEVICE\_ID}
+(\texttt{0x1681}), \texttt{DBT\_AMD\_REMBRANDT\_BAR\_REGS} (\texttt{5}),
+\texttt{DBT\_AMD\_REMBRANDT\_VRAM\_SIZE\_REG} (\texttt{0x378C}, the
+\texttt{mmRCC\_CONFIG\_MEMSIZE} register at \texttt{0x0de3} dwords) and
+\texttt{DBT\_AMD\_REMBRANDT\_DMA\_LIMIT} ($2^{44} - 1$, the GMC~v10 DMA window).
+
+The translation engine is documented separately in
+\texttt{Library/OcDbtLib/README.md}, including its API, the complete instruction
+list above and the \texttt{PcdOcDbt*} build-time configuration.
 
 \subsection{OpenLegacyBoot}\label{legacyboot}
 OpenLegacyBoot is an OpenCore plugin implementing \texttt{OC\_BOOT\_ENTRY\_PROTOCOL}.
