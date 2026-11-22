@@ -4,6 +4,9 @@ OpenCore Changelog
 - Added `OpenDbvX64Dxe` boot entry driver providing a direct kernel boot path for
   macOS 27 (Golden Gate) installers on x86_64 firmware: ARM64 kernels run on the
   dynamic binary translation engine, x86_64 kernels start natively
+- Fixed OpenDbvX64Dxe installer detection for self-contained installer apps
+  (e.g. "Install macOS 27 Golden Gate Beta.app") and for MobileAsset
+  kernelcache ZIPs; hardened IsArm64BootEfi PE header parsing
 - Added `OcDbtLib`, an ARM64 to x86_64 dynamic binary translation library with
   block caching, system register emulation, MMIO/PCIe host layer, per-CPU slots and
   phys windows, plus additive Stela-inspired profiling and
