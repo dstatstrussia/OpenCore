@@ -93,6 +93,29 @@ STATIC EFI_GRAPHICS_OUTPUT_BLT_PIXEL  mEfiBackgroundColors[8] = {
   { 0x98, 0x98, 0x98, 0x00 },  // LIGHTGRAY
 };
 
+//
+// Returns a clear-screen colour that is never pure black, avoiding a
+// black screen when the console attribute happens to select the BLACK
+// palette entry. Falls back to dark gray (0x101010) in that case.
+//
+STATIC
+EFI_GRAPHICS_OUTPUT_BLT_PIXEL
+OcClearScreenColour (
+  IN EFI_SIMPLE_TEXT_OUTPUT_PROTOCOL  *This
+  )
+{
+  EFI_GRAPHICS_OUTPUT_BLT_PIXEL  Colour;
+
+  Colour = mEfiBackgroundColors[BitFieldRead32 ((UINT32)This->Mode->Attribute, 4, 6)];
+  if ((Colour.Red == 0) && (Colour.Green == 0) && (Colour.Blue == 0)) {
+    Colour.Red   = 0x10;
+    Colour.Green = 0x10;
+    Colour.Blue  = 0x10;
+  }
+
+  return Colour;
+}
+
 STATIC
 EFI_STATUS
 EFIAPI
@@ -181,9 +204,11 @@ ControlledClearScreen (
   //
 
   if (GraphicsOutput != NULL) {
+    EFI_GRAPHICS_OUTPUT_BLT_PIXEL  ClearColour = OcClearScreenColour (This);
+
     Status = GraphicsOutput->Blt (
                                GraphicsOutput,
-                               &mEfiBackgroundColors[BitFieldRead32 ((UINT32)This->Mode->Attribute, 4, 6)],
+                               &ClearColour,
                                EfiBltVideoFill,
                                0,
                                0,
@@ -265,9 +290,11 @@ ConsoleControlSetMode (
                );
 
     if (!EFI_ERROR (Status)) {
+      EFI_GRAPHICS_OUTPUT_BLT_PIXEL  ClearColour = OcClearScreenColour (gST->ConOut);
+
       GraphicsOutput->Blt (
                         GraphicsOutput,
-                        &mEfiBackgroundColors[BitFieldRead32 ((UINT32)gST->ConOut->Mode->Attribute, 4, 6)],
+                        &ClearColour,
                         EfiBltVideoFill,
                         0,
                         0,
