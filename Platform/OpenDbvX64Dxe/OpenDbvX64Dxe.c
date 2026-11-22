@@ -320,7 +320,7 @@ ReadKernelFromZip (
       //
       // Match kernelcache.* files
       //
-      if ((NameLen >= 12) && (CompareMem (Name, "AssetData/boot/kernelcache.", 28) == 0)) {
+      if ((NameLen >= 27) && (CompareMem (Name, "AssetData/boot/kernelcache.", 27) == 0)) {
         EntryFound = TRUE;
         DEBUG ((DEBUG_INFO, "DBT: Found kernelcache in ZIP: %a (method=%u, size=%u)\n", Name, Method, UncompSize));
         break;
@@ -465,7 +465,8 @@ IsArm64BootEfi (
 {
   EFI_STATUS         Status;
   EFI_FILE_PROTOCOL  *File;
-  UINT8              Header[128];
+  UINT8              DosHeader[64];
+  UINT8              PeHeader[6];
   UINTN              ReadSize;
   UINT32             PeOffset;
   UINT16             Machine;
@@ -481,30 +482,181 @@ IsArm64BootEfi (
     return FALSE;
   }
 
-  ReadSize = sizeof (Header);
-  Status   = File->Read (File, &ReadSize, Header);
+  //
+  // Read the DOS header first and then seek to e_lfanew.  PE headers are not
+  // guaranteed to live in the first 128 bytes, and many boot.efi builds place
+  // them well beyond that.
+  //
+  ReadSize = sizeof (DosHeader);
+  Status   = File->Read (File, &ReadSize, DosHeader);
+  if (EFI_ERROR (Status) || (ReadSize < sizeof (DosHeader)) || (*(UINT16 *)DosHeader != 0x5A4D)) {
+    File->Close (File);
+    return FALSE;
+  }
+
+  PeOffset = *(UINT32 *)(DosHeader + 0x3C);
+  Status   = File->SetPosition (File, PeOffset);
+  if (EFI_ERROR (Status)) {
+    File->Close (File);
+    return FALSE;
+  }
+
+  ReadSize = sizeof (PeHeader);
+  Status   = File->Read (File, &ReadSize, PeHeader);
   File->Close (File);
 
-  if (EFI_ERROR (Status) || (ReadSize < 64) || (*(UINT16 *)Header != 0x5A4D)) {
+  if (EFI_ERROR (Status) || (ReadSize < sizeof (PeHeader))) {
     return FALSE;
   }
 
-  PeOffset = *(UINT32 *)(Header + 0x3C);
-  if ((PeOffset + 6) > ReadSize) {
+  if (*(UINT32 *)PeHeader != 0x00004550) {
     return FALSE;
   }
 
-  if (*(UINT32 *)(Header + PeOffset) != 0x00004550) {
-    return FALSE;
-  }
-
-  Machine = *(UINT16 *)(Header + PeOffset + 4);
+  Machine = *(UINT16 *)(PeHeader + 4);
   if (Machine == 0xAA64) {
     DEBUG ((DEBUG_INFO, "DBT: ARM64 boot.efi found, kernel must boot through DBT\n"));
     return TRUE;
   }
 
   return FALSE;
+}
+
+STATIC
+BOOLEAN
+FileExists (
+  IN  EFI_FILE_PROTOCOL  *RootDirectory,
+  IN  CONST CHAR16       *Path
+  )
+{
+  EFI_STATUS         Status;
+  EFI_FILE_PROTOCOL  *File;
+
+  Status = RootDirectory->Open (
+                           RootDirectory,
+                           &File,
+                           (CHAR16 *)Path,
+                           EFI_FILE_MODE_READ,
+                           0
+                           );
+  if (EFI_ERROR (Status)) {
+    return FALSE;
+  }
+
+  File->Close (File);
+  return TRUE;
+}
+
+//
+// Newer installers are shipped as self-contained applications, e.g.
+// "Install macOS 27 Golden Gate Beta.app", with the actual payload inside a
+// SharedSupport DMG.  Detect such volumes by enumerating the root directory:
+// the installer app itself is the marker, since the payload cannot be probed
+// through the UEFI file system.
+//
+STATIC
+BOOLEAN
+IsInstallerAppAtRoot (
+  IN  EFI_FILE_PROTOCOL  *RootDirectory
+  )
+{
+  EFI_STATUS     Status;
+  UINT8          *Buffer;
+  UINTN          BufferSize;
+  UINTN          ReadSize;
+  EFI_FILE_INFO  *Info;
+  BOOLEAN        Result = FALSE;
+
+  BufferSize = SIZE_256KB;
+  Buffer     = AllocatePool (BufferSize);
+  if (Buffer == NULL) {
+    return FALSE;
+  }
+
+  for (;;) {
+    ReadSize = BufferSize;
+    Status   = RootDirectory->Read (RootDirectory, &ReadSize, Buffer);
+    if (EFI_ERROR (Status) || (ReadSize == 0)) {
+      break;
+    }
+
+    Info = (EFI_FILE_INFO *)Buffer;
+    while ((UINTN)Info < (UINTN)Buffer + ReadSize) {
+      if (Info->Size == 0) {
+        break;
+      }
+
+      if (  ((Info->Attribute & EFI_FILE_DIRECTORY) != 0)
+         && (StrnCmp (Info->FileName, L"Install macOS", 13) == 0)
+         && (StrLen (Info->FileName) >= 4)
+         && (StrnCmp (Info->FileName + StrLen (Info->FileName) - 4, L".app", 4) == 0))
+      {
+        Result = TRUE;
+        break;
+      }
+
+      Info = (EFI_FILE_INFO *)((UINT8 *)Info + Info->Size);
+    }
+
+    if (Result) {
+      break;
+    }
+  }
+
+  FreePool (Buffer);
+  return Result;
+}
+
+//
+// A kernel at \System\Library\Kernels\kernel is present on every installed
+// macOS volume.  Only treat it as an installer kernel when the same volume
+// carries one of the installer markers, otherwise a normal macOS install is
+// advertised as "macOS Installer (Translated)" in the picker.
+//
+STATIC
+BOOLEAN
+IsInstallerVolume (
+  IN  EFI_FILE_PROTOCOL  *RootDirectory
+  )
+{
+  STATIC CONST CHAR16  *InstallerMarkers[] = {
+    L"\\System\\Library\\CoreServices\\com.apple.installer",
+    L"\\System\\Library\\CoreServices\\InstallInfo.plist",
+    L"\\SharedSupport\\com_apple_MobileAsset_MacSoftwareUpdate",
+    L"\\com_apple_MobileAsset_MacSoftwareUpdate",
+    L"\\com_apple_MobileAsset_MacSoftwareUpdate\\AssetData\\boot",
+    L"\\AssetData\\boot",
+    L"\\SharedSupport\\kernel",
+    L"\\SharedSupport\\kernelcache.release",
+    L"\\SharedSupport\\kernelcache.decomp",
+    L"\\kernelcache.decomp",
+    L"\\kernelcache.release",
+    L"\\kernel",
+    L"\\System\\Library\\dyld\\shared_cache.x86_64",
+    L"\\System\\Library\\dyld\\shared_cache.x86_64h",
+    L"\\.IAPhysicalMedia",
+    NULL
+  };
+  UINTN  Index;
+
+  for (Index = 0; InstallerMarkers[Index] != NULL; ++Index) {
+    if (FileExists (RootDirectory, InstallerMarkers[Index])) {
+      return TRUE;
+    }
+  }
+
+  //
+  // Self-contained installer apps, e.g. "Install macOS 27 Golden Gate Beta.app".
+  //
+  if (IsInstallerAppAtRoot (RootDirectory)) {
+    return TRUE;
+  }
+
+  //
+  // macOS 27 installers keep an ARM64 boot.efi but may not expose any of the
+  // classic installer paths.
+  //
+  return IsArm64BootEfi (RootDirectory);
 }
 
 //
@@ -515,6 +667,7 @@ IsArm64BootEfi (
 STATIC
 BOOLEAN
 FindKernelInDirectory (
+  IN  EFI_FILE_PROTOCOL  *RootDirectory,
   IN  EFI_FILE_PROTOCOL  *Directory,
   IN  CONST CHAR16       *DirectoryPath,
   OUT CHAR16             *KernelPath,
@@ -554,6 +707,34 @@ FindKernelInDirectory (
         return TRUE;
       }
 
+      //
+      // Newer installers keep the kernel inside a ZIP archive
+      // (e.g. MobileAsset AssetData/boot/kernelcache.*); probe it and report
+      // the archive as the discovered kernel path.
+      //
+      if (  ((Info->Attribute & EFI_FILE_DIRECTORY) == 0)
+         && (StrStr (Info->FileName, L".zip") != NULL))
+      {
+        CHAR16  ZipPath[256];
+        UINT32  ZipSize;
+        VOID    *ZipKernel;
+
+        ZipSize   = 0;
+        ZipKernel = NULL;
+        UnicodeSPrint (ZipPath, sizeof (ZipPath), L"%s\\%s", DirectoryPath, Info->FileName);
+        ZipKernel = ReadKernelFromZip (RootDirectory, ZipPath, L"kernelcache", &ZipSize);
+        if (ZipKernel != NULL) {
+          //
+          // DirectLoadKernel re-reads the kernel from the ZIP when it boots;
+          // the probe result is only needed to confirm discovery.
+          //
+          FreePool (ZipKernel);
+          UnicodeSPrint (KernelPath, KernelPathSize, L"%s", ZipPath);
+          FreePool (Buffer);
+          return TRUE;
+        }
+      }
+
       Info = (EFI_FILE_INFO *)((UINT8 *)Info + Info->Size);
     }
   }
@@ -571,6 +752,7 @@ STATIC
 BOOLEAN
 FindInstallerKernel (
   IN  EFI_FILE_PROTOCOL  *RootDirectory,
+  IN  BOOLEAN            AllowSystemKernel,
   OUT CHAR16             *KernelPath,
   IN  UINTN              KernelPathSize
   )
@@ -580,13 +762,17 @@ FindInstallerKernel (
   EFI_FILE_PROTOCOL  *Directory;
   UINTN              Index;
 
-  STATIC CONST CHAR16  *KernelPaths[] = {
+  STATIC CONST CHAR16  *InstallerKernelPaths[] = {
     L"\\SharedSupport\\kernel",
     L"\\SharedSupport\\kernelcache.release",
     L"\\SharedSupport\\kernelcache.decomp",
     L"\\kernelcache.decomp",
     L"\\kernelcache.release",
     L"\\kernel",
+    NULL
+  };
+
+  STATIC CONST CHAR16  *SystemKernelPaths[] = {
     L"\\System\\Library\\Kernels\\kernel",
     L"\\System\\Library\\KernelCache\\kernelcache.release",
     NULL
@@ -594,23 +780,46 @@ FindInstallerKernel (
 
   STATIC CONST CHAR16  *KernelDirs[] = {
     L"\\com_apple_MobileAsset_MacSoftwareUpdate\\AssetData\\boot",
+    L"\\com_apple_MobileAsset_MacSoftwareUpdate",
     L"\\AssetData\\boot",
     L"\\SharedSupport",
     NULL
   };
 
-  for (Index = 0; KernelPaths[Index] != NULL; ++Index) {
+  for (Index = 0; InstallerKernelPaths[Index] != NULL; ++Index) {
     Status = RootDirectory->Open (
                              RootDirectory,
                              &File,
-                             (CHAR16 *)KernelPaths[Index],
+                             (CHAR16 *)InstallerKernelPaths[Index],
                              EFI_FILE_MODE_READ,
                              0
                              );
     if (!EFI_ERROR (Status)) {
       File->Close (File);
-      UnicodeSPrint (KernelPath, KernelPathSize, L"%s", KernelPaths[Index]);
+      UnicodeSPrint (KernelPath, KernelPathSize, L"%s", InstallerKernelPaths[Index]);
       return TRUE;
+    }
+  }
+
+  //
+  // System/Library/Kernels/kernel exists on installed macOS volumes too, so
+  // only consider it when the caller has established that this is an
+  // installer volume.
+  //
+  if (AllowSystemKernel) {
+    for (Index = 0; SystemKernelPaths[Index] != NULL; ++Index) {
+      Status = RootDirectory->Open (
+                               RootDirectory,
+                               &File,
+                               (CHAR16 *)SystemKernelPaths[Index],
+                               EFI_FILE_MODE_READ,
+                               0
+                               );
+      if (!EFI_ERROR (Status)) {
+        File->Close (File);
+        UnicodeSPrint (KernelPath, KernelPathSize, L"%s", SystemKernelPaths[Index]);
+        return TRUE;
+      }
     }
   }
 
@@ -626,7 +835,7 @@ FindInstallerKernel (
       continue;
     }
 
-    if (FindKernelInDirectory (Directory, KernelDirs[Index], KernelPath, KernelPathSize)) {
+    if (FindKernelInDirectory (RootDirectory, Directory, KernelDirs[Index], KernelPath, KernelPathSize)) {
       Directory->Close (Directory);
       return TRUE;
     }
@@ -671,7 +880,7 @@ FindInstallerKernelDevice (
     if (!EFI_ERROR (Status)) {
       Status = FileSystem->OpenVolume (FileSystem, &Root);
       if (!EFI_ERROR (Status)) {
-        if (FindInstallerKernel (Root, KernelPath, KernelPathSize)) {
+        if (FindInstallerKernel (Root, IsInstallerVolume (Root), KernelPath, KernelPathSize)) {
           Result = PreferredDevice;
         }
 
@@ -714,7 +923,7 @@ FindInstallerKernelDevice (
       continue;
     }
 
-    if (FindInstallerKernel (Root, KernelPath, KernelPathSize)) {
+    if (FindInstallerKernel (Root, IsInstallerVolume (Root), KernelPath, KernelPathSize)) {
       Result = Handles[Index];
       Root->Close (Root);
       break;
@@ -1842,6 +2051,26 @@ DirectLoadKernel (
         RootDirectory->Close (RootDirectory);
         return Status;
       }
+    }
+  }
+
+  //
+  // When the resolved kernel path is a ZIP archive, extract the kernelcache
+  // from it (e.g. MobileAsset AssetData/boot/kernelcache.*); the opened ZIP
+  // file handle is not a Mach-O image.
+  //
+  if (  (AllocatedSize == 0)
+     && (KernelFile != NULL)
+     && (StrStr (KernelPath, L".zip") != NULL))
+  {
+    KernelBuffer = ReadKernelFromZip (RootDirectory, KernelPath, L"kernelcache", &KernelSize);
+    KernelFile->Close (KernelFile);
+    KernelFile    = NULL;
+    AllocatedSize = KernelSize;
+    Is32Bit       = FALSE;
+    Status        = KernelBuffer != NULL ? EFI_SUCCESS : EFI_NOT_FOUND;
+    if (!EFI_ERROR (Status)) {
+      DEBUG ((DEBUG_INFO, "DirectKernel: Extracted kernel from ZIP: %s - %u bytes\n", KernelPath, KernelSize));
     }
   }
 
@@ -3184,7 +3413,7 @@ OcGetDbtBootEntries (
     CHAR16  KernelPathBuf[256];
 
     DEBUG ((DEBUG_INFO, "DBT: Probing installer volumes for kernel/kernelcache\n"));
-    if (FindInstallerKernel (RootDirectory, KernelPathBuf, sizeof (KernelPathBuf))) {
+    if (FindInstallerKernel (RootDirectory, IsInstallerVolume (RootDirectory), KernelPathBuf, sizeof (KernelPathBuf))) {
       DEBUG ((DEBUG_INFO, "DBT: Found installer kernel at %s\n", KernelPathBuf));
       ++EntryCount;
       IsMacSoftwareUpdate = TRUE;
@@ -3201,7 +3430,22 @@ OcGetDbtBootEntries (
     //
     if (IsArm64BootEfi (RootDirectory)) {
       DEBUG ((DEBUG_INFO, "DBT: ARM64 boot.efi found, creating translated installer entry\n"));
-      EntryCount       = 1;
+      EntryCount          = 1;
+      IsMacSoftwareUpdate = TRUE;
+    }
+  }
+
+  if (EntryCount == 0) {
+    //
+    // Newer installers ship as self-contained applications on the installer
+    // volume, e.g. "Install macOS 27 Golden Gate Beta.app" with the payload
+    // inside the bundle.  Advertise the translated installer entry so the
+    // installer is visible in the boot menu; the boot action resolves the
+    // kernel when the entry is selected.
+    //
+    if (IsInstallerAppAtRoot (RootDirectory)) {
+      DEBUG ((DEBUG_INFO, "DBT: Installer app at root detected, creating translated installer entry\n"));
+      EntryCount          = 1;
       IsMacSoftwareUpdate = TRUE;
     }
   }
