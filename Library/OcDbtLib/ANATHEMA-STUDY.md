@@ -63,3 +63,24 @@ fork.
 cd UDK/Build/OpenCorePkg/DEBUG_CLANGPDB/X64/OpenCorePkg/Platform/OpenDbvX64Dxe/OpenDbvX64Dxe
 make tbuild
 ```
+
+## FP/SIMD port — implementation sketch (anathema → OcDbtLib)
+
+Source: `anathema-xlat/src/trans/vec.rs` (`vlog()`, `vlog_lane_scalar()`, `vlog_scalar()`, `vlog_vector()`)
++ `anathema-xlat/src/decode.rs` (`Insn::VLog`, `VArith`, `VmovI`, `Vdup*`, `Movi`, `Fmov*`, `Fp*`).
+
+Steps:
+1. **Mirror anathea decoder for VLog ops** — `vlog(op, q, rd, rn, rm)` op table (0=VAND, 1=BIC, 2=VMOV,
+   3=BSL, 4=VORR, 5/6=BIT/BIF, 7=ORN/CMTST...). Most common: `VAND` (`0xdb`), `VORR` (`0xef`), `VMOV`,
+   `BSL` (`0xeb`).
+2. **Map guest VFP regs → x86**: check `OcDbtLib.h` for existing guest-SIMD state (`DBT_ARM64_STATE`).
+   Anathea uses `vsrc/vdst`→`X13/X14/X15` and emits VEX (`0xdb`, `0xef`, `0xeb`); our emitter is
+   `OcDbtLib.c` (`Emit*`, `DBT_ASM` switch at ~3727). Check `DBT_SIMD: FADD -> NOP` stubs (lines
+   ~3731-3763) and replace with real emissions.
+3. **Semantics**: guest `VAND Vd.16b, Vn.16b, Vm.16b` → host `MOVDQU` + `PAND` (or SSE2 on XMM).
+   Most of anathema's `VLog` op implementations are VEX forms of PAND/PANDN/PAND/PXOR/POR/PALIGNR —
+   the same ops need porting to C (`AlkB`, EmitXor, etc.).
+4. **Testing**: no hw here; can at least compile (`make tbuild` in
+   `UDK/Build/OpenCorePkg/DEBUG_CLANGPDB/X64/OpenCorePkg/Platform/OpenDbvX64Dxe/OpenDbvX64Dxe`).
+
+Budget: full port is out of reach now; the plan above is the roadmap item 1 from the study.
