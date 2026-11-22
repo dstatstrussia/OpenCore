@@ -138,8 +138,271 @@ AllocKernelImageBuffer (
 }
 
 //
-// Read kernelcache from ZIP file.
-// Returns allocated buffer with kernel data, or NULL.
+// Read a kernelcache from a ZIP archive that begins at absolute offset `Base`
+// within `File` and whose end-of-central-directory is at `EocdPos`.  The same
+// logic is shared by ZIP files and by ZIP archives found inside an installer
+// DMG.  Returns an allocated buffer with kernel data, or NULL.
+//
+STATIC
+VOID *
+ReadKernelFromZipSrc (
+  IN  EFI_FILE_PROTOCOL  *File,
+  IN  UINT64             Base,
+  IN  UINT64             EocdPos,
+  OUT UINT32             *OutSize
+  )
+{
+  EFI_STATUS  Status;
+  UINT8       EocdBuf[128];
+  UINTN       ReadSize;
+  UINT32      TotalEntries;
+  UINT32      CentralDirSize;
+  UINT64      CentralDirOffset;
+  UINT8      *CdBuf;
+  UINT8      *Ptr;
+  UINTN       I;
+  UINT32      LocalOffset    = 0;
+  UINT32      UncompSize     = 0;
+  UINT32      CompressedSize = 0;
+  UINT16      Method         = 0;
+  UINT16      NameLen;
+  UINT16      ExtraLen;
+  UINT32      DataOffset;
+  UINT8       LocalBuf[128];
+  UINT8      *Result     = NULL;
+  BOOLEAN     EntryFound = FALSE;
+
+  *OutSize = 0;
+
+  //
+  // Read and validate the EOCD
+  //
+  ReadSize = sizeof (EocdBuf);
+  Status = File->SetPosition (File, EocdPos);
+  if (EFI_ERROR (Status)) {
+    return NULL;
+  }
+  Status = File->Read (File, &ReadSize, EocdBuf);
+  if (EFI_ERROR (Status) || (*(UINT32 *)EocdBuf != ZIP_EOCD_SIGNATURE)) {
+    return NULL;
+  }
+
+  //
+  // EOCD fields at the signature:
+  // +0: signature(4) +4: disk_number(2) +6: disk_cd(2) +8: entries_on_disk(2)
+  // +10: total_entries(2) +12: cd_size(4) +16: cd_offset(4) +20: comment_len(2)
+  //
+  TotalEntries     = *(UINT16 *)(EocdBuf + 10);
+  CentralDirSize   = *(UINT32 *)(EocdBuf + 12);
+  CentralDirOffset = *(UINT32 *)(EocdBuf + 16);
+  if (CentralDirOffset == 0) {
+    return NULL;
+  }
+
+  //
+  // If 32-bit CD offset is 0xFFFFFFFF, use ZIP64 EOCD
+  //
+  if (CentralDirOffset == 0xFFFFFFFFU) {
+    UINT8   Zip64LocBuf[20];
+    UINT64  Zip64EocdOff;
+    UINT8   Zip64Buf[56];
+
+    Status = File->SetPosition (File, EocdPos - 20);
+    if (!EFI_ERROR (Status)) {
+      ReadSize = 20;
+      Status = File->Read (File, &ReadSize, Zip64LocBuf);
+      if (!EFI_ERROR (Status) && (*(UINT32 *)Zip64LocBuf == 0x07064B50U)) {
+        Zip64EocdOff = *(UINT64 *)(Zip64LocBuf + 8);
+        Status = File->SetPosition (File, Base + Zip64EocdOff);
+        if (!EFI_ERROR (Status)) {
+          ReadSize = 56;
+          Status = File->Read (File, &ReadSize, Zip64Buf);
+          if (!EFI_ERROR (Status) && (*(UINT32 *)Zip64Buf == 0x06064B50U)) {
+            CentralDirSize   = *(UINT64 *)(Zip64Buf + 40);
+            CentralDirOffset = *(UINT64 *)(Zip64Buf + 48);
+          }
+        }
+      }
+    }
+  }
+
+  //
+  // Read central directory
+  //
+  CdBuf = AllocatePool (CentralDirSize);
+  if (CdBuf == NULL) {
+    return NULL;
+  }
+  Status = File->SetPosition (File, Base + CentralDirOffset);
+  if (EFI_ERROR (Status)) {
+    FreePool (CdBuf);
+    return NULL;
+  }
+  ReadSize = CentralDirSize;
+  Status = File->Read (File, &ReadSize, CdBuf);
+  if (EFI_ERROR (Status)) {
+    FreePool (CdBuf);
+    return NULL;
+  }
+
+  //
+  // Scan central directory for kernelcache entry
+  //
+  Ptr = CdBuf;
+  for (I = 0; I < TotalEntries; I++) {
+    //
+    // CFH: sig(4) ver_made(2) ver_need(2) flags(2) method(2) ...
+    // +24: comp_size(4), +28: uncomp_size(4), +32: name_len(2), +34: extra_len(2), +36: comment_len(2)
+    // +42: local_header_offset(4), +46: filename(N)
+    //
+    if (*(UINT32 *)Ptr != 0x02014B50U) {
+      break;
+    }
+    Method       = *(UINT16 *)(Ptr + 10);
+    UncompSize   = *(UINT32 *)(Ptr + 24);
+    NameLen      = *(UINT16 *)(Ptr + 28);
+    ExtraLen     = *(UINT16 *)(Ptr + 30);
+    LocalOffset  = *(UINT32 *)(Ptr + 42);
+
+    if (NameLen > 0) {
+      CHAR8 *Name = (CHAR8 *)(Ptr + 46);
+      //
+      // Match kernelcache.* files
+      //
+      if ((NameLen >= 27) && (CompareMem (Name, "AssetData/boot/kernelcache.", 27) == 0)) {
+        EntryFound = TRUE;
+        DEBUG ((DEBUG_INFO, "DBT: Found kernelcache in ZIP: %a (method=%u, size=%u)\n", Name, Method, UncompSize));
+        break;
+      }
+    }
+    Ptr += 46 + NameLen + ExtraLen + *(UINT16 *)(Ptr + 32);
+  }
+  FreePool (CdBuf);
+
+  if (!EntryFound) {
+    return NULL;
+  }
+
+  //
+  // Read local file header to get exact data offset
+  //
+  Status = File->SetPosition (File, Base + LocalOffset);
+  if (EFI_ERROR (Status)) {
+    return NULL;
+  }
+  ReadSize = sizeof (LocalBuf);
+  Status = File->Read (File, &ReadSize, LocalBuf);
+  if (EFI_ERROR (Status)) {
+    return NULL;
+  }
+
+  if (*(UINT32 *)LocalBuf != ZIP_LOCAL_FILE_SIGNATURE) {
+    return NULL;
+  }
+
+  NameLen   = *(UINT16 *)(LocalBuf + 26);
+  ExtraLen  = *(UINT16 *)(LocalBuf + 28);
+  DataOffset = LocalOffset + 30 + NameLen + ExtraLen;
+
+  if (Method == ZIP_METHOD_STORED) {
+    CompressedSize = UncompSize;
+  } else {
+    CompressedSize = *(UINT32 *)(LocalBuf + 18);
+    //
+    // Check for ZIP64 extra field if compressed size is 0xFFFFFFFF
+    //
+    if ((CompressedSize == 0xFFFFFFFFU) && (ExtraLen >= 20)) {
+      UINT8   *Extra = (UINT8 *)LocalBuf + 30 + NameLen;
+      UINT16  Remaining = ExtraLen;
+      while (Remaining >= 4) {
+        UINT16  Tag  = *(UINT16 *)Extra;
+        UINT16  Size = *(UINT16 *)(Extra + 2);
+        if (Tag == 0x0001 && Size >= 16) {  // ZIP64 extra field
+          CompressedSize = (UINT32)*(UINT64 *)(Extra + 4 + 8);  // compressed_size after uncompressed_size
+          break;
+        }
+        Remaining = (UINT16)(Remaining - 4 - Size);
+        Extra += 4 + Size;
+      }
+    }
+  }
+
+  if (Method == ZIP_METHOD_STORED) {
+    //
+    // Read uncompressed data directly
+    //
+    Result = AllocKernelImageBuffer (UncompSize + 1);
+    if (Result != NULL) {
+      Status = File->SetPosition (File, Base + DataOffset);
+      if (!EFI_ERROR (Status)) {
+        ReadSize = UncompSize;
+        Status = File->Read (File, &ReadSize, Result);
+        if (!EFI_ERROR (Status) && ReadSize == UncompSize) {
+          Result[UncompSize] = 0;
+          *OutSize = UncompSize;
+          DEBUG ((DEBUG_INFO, "DBT: Read kernelcache %u bytes (stored)\n", UncompSize));
+        } else {
+          FreePool (Result);
+          Result = NULL;
+        }
+      } else {
+        FreePool (Result);
+        Result = NULL;
+      }
+    }
+  } else {
+    //
+    // DEFLATE — decompress using zlib inflate
+    //
+    UINT8  *CompBuf = AllocatePool (CompressedSize);
+    if (CompBuf != NULL) {
+      Status = File->SetPosition (File, Base + DataOffset);
+      if (!EFI_ERROR (Status)) {
+        ReadSize = CompressedSize;
+        Status = File->Read (File, &ReadSize, CompBuf);
+        if (!EFI_ERROR (Status)) {
+          Result = AllocKernelImageBuffer (UncompSize + 1);
+          if (Result != NULL) {
+            z_stream  Strm;
+            INT32     Ret;
+
+            ZeroMem (&Strm, sizeof (Strm));
+            Strm.next_in   = CompBuf;
+            Strm.avail_in  = (UINT32)ReadSize;
+            Strm.next_out  = Result;
+            Strm.avail_out = UncompSize;
+
+            Ret = inflateInit2 (&Strm, -MAX_WBITS);
+            if (Ret == Z_OK) {
+              Ret = inflate (&Strm, Z_FINISH);
+              inflateEnd (&Strm);
+              if ((Ret == Z_STREAM_END) && (Strm.total_out == UncompSize)) {
+                Result[UncompSize] = 0;
+                *OutSize = UncompSize;
+                DEBUG ((DEBUG_INFO, "DBT: Decompressed kernelcache %u bytes (deflate)\n", UncompSize));
+              } else {
+                DEBUG ((DEBUG_INFO, "DBT: inflate failed ret=%d total_out=%lu expected=%u\n", Ret, (UINT64)Strm.total_out, UncompSize));
+                FreePool (Result);
+                Result = NULL;
+              }
+            } else {
+              DEBUG ((DEBUG_INFO, "DBT: inflateInit2 failed ret=%d\n", Ret));
+              FreePool (Result);
+              Result = NULL;
+            }
+          }
+        }
+      }
+      FreePool (CompBuf);
+    }
+  }
+
+  return Result;
+}
+
+//
+// Read kernelcache from ZIP file at a known path.
+// Returns an allocated buffer with kernel data, or NULL.
 //
 STATIC
 VOID *
@@ -158,18 +421,8 @@ ReadKernelFromZip (
   EFI_FILE_INFO      *Info;
   UINTN              InfoSize;
   UINT64             EocdOffset;
-  UINT64             CentralDirOffset;
-  UINT64             CentralDirSize;
-  UINT64             TotalEntries;
   UINTN              I;
-  UINT32             LocalOffset     = 0;
-  UINT32             UncompSize      = 0;
-  UINT32             CompressedSize  = 0;
-  UINT16             Method       = 0;
-  UINT16             NameLen;
-  UINT16             ExtraLen;
-  UINT8              *Result      = NULL;
-  BOOLEAN            EntryFound   = FALSE;
+  VOID               *Result;
 
   *OutSize = 0;
 
@@ -224,237 +477,141 @@ ReadKernelFromZip (
   for (I = 0; I + 4 < ReadSize; I++) {
     if (*(UINT32 *)(EocdBuf + I) == ZIP_EOCD_SIGNATURE) {
       EocdOffset = FileSize - sizeof (EocdBuf) + I;
-      //
-      // EOCD fields at this offset:
-      // +0: signature(4)
-      // +4: disk_number(2)
-      // +6: disk_cd(2)
-      // +8: entries_on_disk(2)
-      // +10: total_entries(2)
-      // +12: cd_size(4)
-      // +16: cd_offset(4)
-      // +20: comment_len(2)
-      //
-      TotalEntries     = *(UINT16 *)(EocdBuf + I + 10);
-      CentralDirSize   = *(UINT32 *)(EocdBuf + I + 12);
-      CentralDirOffset = *(UINT32 *)(EocdBuf + I + 16);
       break;
     }
   }
 
-  if (EocdOffset == 0 || CentralDirOffset == 0) {
+  if (EocdOffset == 0) {
     ZipFile->Close (ZipFile);
     return NULL;
   }
 
-  //
-  // If 32-bit CD offset is 0xFFFFFFFF, use ZIP64 EOCD
-  //
-  if (CentralDirOffset == 0xFFFFFFFFU) {
-    UINT8   Zip64LocBuf[20];
-    UINT64  Zip64EocdOff;
-
-    Status = ZipFile->SetPosition (ZipFile, EocdOffset - 20);
-    if (!EFI_ERROR (Status)) {
-      ReadSize = 20;
-      Status = ZipFile->Read (ZipFile, &ReadSize, Zip64LocBuf);
-      if (!EFI_ERROR (Status) && (*(UINT32 *)Zip64LocBuf == 0x07064B50U)) {
-        Zip64EocdOff = *(UINT64 *)(Zip64LocBuf + 8);
-        UINT8   Zip64Buf[56];
-        Status = ZipFile->SetPosition (ZipFile, Zip64EocdOff);
-        if (!EFI_ERROR (Status)) {
-          ReadSize = 56;
-          Status = ZipFile->Read (ZipFile, &ReadSize, Zip64Buf);
-          if (!EFI_ERROR (Status) && (*(UINT32 *)Zip64Buf == 0x06064B50U)) {
-          CentralDirSize   = *(UINT64 *)(Zip64Buf + 40);
-            CentralDirOffset = *(UINT64 *)(Zip64Buf + 48);
-          }
-        }
-      }
-    }
-  }
-
-  //
-  // Read central directory
-  //
-  UINT8  *CdBuf = AllocatePool (CentralDirSize);
-  if (CdBuf == NULL) {
-    ZipFile->Close (ZipFile);
-    return NULL;
-  }
-  Status = ZipFile->SetPosition (ZipFile, CentralDirOffset);
-  if (EFI_ERROR (Status)) {
-    FreePool (CdBuf);
-    ZipFile->Close (ZipFile);
-    return NULL;
-  }
-  ReadSize = CentralDirSize;
-  Status = ZipFile->Read (ZipFile, &ReadSize, CdBuf);
-  if (EFI_ERROR (Status)) {
-    FreePool (CdBuf);
-    ZipFile->Close (ZipFile);
-    return NULL;
-  }
-
-  //
-  // Scan central directory for kernelcache entry
-  //
-  UINT8  *Ptr = CdBuf;
-  for (I = 0; I < TotalEntries; I++) {
-    //
-    // CFH: sig(4) ver_made(2) ver_need(2) flags(2) method(2) ...
-    // +24: comp_size(4), +28: uncomp_size(4), +32: name_len(2), +34: extra_len(2), +36: comment_len(2)
-    // +42: local_header_offset(4), +46: filename(N)
-    //
-    if (*(UINT32 *)Ptr != 0x02014B50U) {
-      break;
-    }
-    Method       = *(UINT16 *)(Ptr + 10);
-    UncompSize   = *(UINT32 *)(Ptr + 24);
-    NameLen      = *(UINT16 *)(Ptr + 28);
-    ExtraLen     = *(UINT16 *)(Ptr + 30);
-    LocalOffset  = *(UINT32 *)(Ptr + 42);
-
-    if (NameLen > 0) {
-      CHAR8 *Name = (CHAR8 *)(Ptr + 46);
-      //
-      // Match kernelcache.* files
-      //
-      if ((NameLen >= 27) && (CompareMem (Name, "AssetData/boot/kernelcache.", 27) == 0)) {
-        EntryFound = TRUE;
-        DEBUG ((DEBUG_INFO, "DBT: Found kernelcache in ZIP: %a (method=%u, size=%u)\n", Name, Method, UncompSize));
-        break;
-      }
-    }
-    Ptr += 46 + NameLen + ExtraLen + *(UINT16 *)(Ptr + 32);
-  }
-  FreePool (CdBuf);
-
-  if (!EntryFound) {
-    ZipFile->Close (ZipFile);
-    return NULL;
-  }
-
-  //
-  // Read local file header to get exact data offset
-  //
-  UINT8  LocalBuf[128];
-  Status = ZipFile->SetPosition (ZipFile, LocalOffset);
-  if (EFI_ERROR (Status)) {
-    ZipFile->Close (ZipFile);
-    return NULL;
-  }
-  ReadSize = sizeof (LocalBuf);
-  Status = ZipFile->Read (ZipFile, &ReadSize, LocalBuf);
-  if (EFI_ERROR (Status)) {
-    ZipFile->Close (ZipFile);
-    return NULL;
-  }
-
-  if (*(UINT32 *)LocalBuf != ZIP_LOCAL_FILE_SIGNATURE) {
-    ZipFile->Close (ZipFile);
-    return NULL;
-  }
-
-  NameLen  = *(UINT16 *)(LocalBuf + 26);
-  ExtraLen = *(UINT16 *)(LocalBuf + 28);
-  UINT32  DataOffset = LocalOffset + 30 + NameLen + ExtraLen;
-
-  if (Method == ZIP_METHOD_STORED) {
-    CompressedSize = UncompSize;
-  } else {
-    CompressedSize = *(UINT32 *)(LocalBuf + 18);
-    //
-    // Check for ZIP64 extra field if compressed size is 0xFFFFFFFF
-    //
-    if ((CompressedSize == 0xFFFFFFFFU) && (ExtraLen >= 20)) {
-      UINT8   *Extra = (UINT8 *)LocalBuf + 30 + NameLen;
-      UINT16  Remaining = ExtraLen;
-      while (Remaining >= 4) {
-        UINT16  Tag  = *(UINT16 *)Extra;
-        UINT16  Size = *(UINT16 *)(Extra + 2);
-        if (Tag == 0x0001 && Size >= 16) {  // ZIP64 extra field
-          CompressedSize = (UINT32)*(UINT64 *)(Extra + 4 + 8);  // compressed_size after uncompressed_size
-          break;
-        }
-        Remaining = (UINT16)(Remaining - 4 - Size);
-        Extra += 4 + Size;
-      }
-    }
-  }
-
-  if (Method == ZIP_METHOD_STORED) {
-    //
-    // Read uncompressed data directly
-    //
-    Result = AllocKernelImageBuffer (UncompSize + 1);
-    if (Result != NULL) {
-      Status = ZipFile->SetPosition (ZipFile, DataOffset);
-      if (!EFI_ERROR (Status)) {
-        ReadSize = UncompSize;
-        Status = ZipFile->Read (ZipFile, &ReadSize, Result);
-        if (!EFI_ERROR (Status) && ReadSize == UncompSize) {
-          Result[UncompSize] = 0;
-          *OutSize = UncompSize;
-          DEBUG ((DEBUG_INFO, "DBT: Read kernelcache %u bytes (stored)\n", UncompSize));
-        } else {
-          FreePool (Result);
-          Result = NULL;
-        }
-      } else {
-        FreePool (Result);
-        Result = NULL;
-      }
-    }
-  } else {
-    //
-    // DEFLATE — decompress using zlib inflate
-    //
-    UINT8  *CompBuf = AllocatePool (CompressedSize);
-    if (CompBuf != NULL) {
-      Status = ZipFile->SetPosition (ZipFile, DataOffset);
-      if (!EFI_ERROR (Status)) {
-        ReadSize = CompressedSize;
-        Status = ZipFile->Read (ZipFile, &ReadSize, CompBuf);
-        if (!EFI_ERROR (Status)) {
-          Result = AllocKernelImageBuffer (UncompSize + 1);
-          if (Result != NULL) {
-            z_stream  Strm;
-            INT32     Ret;
-
-            ZeroMem (&Strm, sizeof (Strm));
-            Strm.next_in   = CompBuf;
-            Strm.avail_in  = (UINT32)ReadSize;
-            Strm.next_out  = Result;
-            Strm.avail_out = UncompSize;
-
-            Ret = inflateInit2 (&Strm, -MAX_WBITS);
-            if (Ret == Z_OK) {
-              Ret = inflate (&Strm, Z_FINISH);
-              inflateEnd (&Strm);
-              if ((Ret == Z_STREAM_END) && (Strm.total_out == UncompSize)) {
-                Result[UncompSize] = 0;
-                *OutSize = UncompSize;
-                DEBUG ((DEBUG_INFO, "DBT: Decompressed kernelcache %u bytes (deflate)\n", UncompSize));
-              } else {
-                DEBUG ((DEBUG_INFO, "DBT: inflate failed ret=%d total_out=%lu expected=%u\n", Ret, (UINT64)Strm.total_out, UncompSize));
-                FreePool (Result);
-                Result = NULL;
-              }
-            } else {
-              DEBUG ((DEBUG_INFO, "DBT: inflateInit2 failed ret=%d\n", Ret));
-              FreePool (Result);
-              Result = NULL;
-            }
-          }
-        }
-      }
-      FreePool (CompBuf);
-    }
-  }
-
+  Result = ReadKernelFromZipSrc (ZipFile, 0, EocdOffset, OutSize);
   ZipFile->Close (ZipFile);
   return Result;
+}
+
+//
+// Scan an installer DMG backwards for ZIP EOCD records and locate the
+// kernelcache inside them through ReadKernelFromZipSrc, so that the original
+// installer image boots without any manual extraction.
+//
+STATIC
+VOID *
+ReadKernelFromDmg (
+  IN  EFI_FILE_PROTOCOL  *DmgFile,
+  OUT UINT32             *OutSize
+  )
+{
+  EFI_STATUS     Status;
+  EFI_FILE_INFO  *Info;
+  UINTN          InfoSize;
+  UINT8          *Buf;
+  UINTN          BufSize;
+  UINTN          ReadSize;
+  UINT64         Off;
+  UINT64         DmgSize;
+  UINTN          I;
+  VOID           *Kernel;
+
+  //
+  // Get the DMG file size
+  //
+  InfoSize = 0;
+  Status = DmgFile->GetInfo (DmgFile, &gEfiFileInfoGuid, &InfoSize, NULL);
+  if (EFI_ERROR (Status)) {
+    return NULL;
+  }
+  Info = AllocatePool (InfoSize);
+  if (Info == NULL) {
+    return NULL;
+  }
+  Status = DmgFile->GetInfo (DmgFile, &gEfiFileInfoGuid, &InfoSize, Info);
+  if (EFI_ERROR (Status)) {
+    FreePool (Info);
+    return NULL;
+  }
+  DmgSize = Info->FileSize;
+  FreePool (Info);
+
+  BufSize = 64 * 1024;
+  Buf = AllocatePool (BufSize);
+  if (Buf == NULL) {
+    return NULL;
+  }
+
+  Kernel = NULL;
+  Off    = DmgSize;
+
+  while ((Off > 0) && (Kernel == NULL)) {
+    UINT64  ReadAt;
+    UINTN   ToRead;
+
+    if (Off >= BufSize) {
+      ReadAt = Off - BufSize;
+      ToRead = BufSize;
+    } else {
+      ReadAt = 0;
+      ToRead = Off;
+    }
+
+    Status = DmgFile->SetPosition (DmgFile, ReadAt);
+    if (EFI_ERROR (Status)) {
+      break;
+    }
+
+    ReadSize = ToRead;
+    Status   = DmgFile->Read (DmgFile, &ReadSize, Buf);
+    if (EFI_ERROR (Status)) {
+      break;
+    }
+
+    for (I = 0; I + 4 <= ReadSize; I++) {
+      if (*(UINT32 *)(Buf + I) != ZIP_EOCD_SIGNATURE) {
+        continue;
+      }
+
+      {
+        UINT8  EocdBuf[128];
+        UINT64 EocdPos = ReadAt + I;
+        UINT32 CentralDirSize;
+        UINT64 CentralDirOffset;
+        UINT64 Base;
+
+        Status = DmgFile->SetPosition (DmgFile, EocdPos);
+        if (EFI_ERROR (Status)) {
+          continue;
+        }
+        ReadSize = sizeof (EocdBuf);
+        Status = DmgFile->Read (DmgFile, &ReadSize, EocdBuf);
+        if (EFI_ERROR (Status) || (*(UINT32 *)EocdBuf != ZIP_EOCD_SIGNATURE)) {
+          continue;
+        }
+
+        CentralDirSize   = *(UINT32 *)(EocdBuf + 12);
+        CentralDirOffset = *(UINT32 *)(EocdBuf + 16);
+
+        if (CentralDirOffset > EocdPos) {
+          continue;
+        }
+        if (CentralDirSize > EocdPos - CentralDirOffset) {
+          continue;
+        }
+
+        Base = EocdPos - CentralDirOffset - CentralDirSize;
+
+        Kernel = ReadKernelFromZipSrc (DmgFile, Base, EocdPos, OutSize);
+        if (Kernel != NULL) {
+          break;
+        }
+      }
+    }
+
+    Off = ReadAt;
+  }
+
+  FreePool (Buf);
+  return Kernel;
 }
 
 STATIC
@@ -548,16 +705,14 @@ FileExists (
 }
 
 //
-// Newer installers are shipped as self-contained applications, e.g.
-// "Install macOS 27 Golden Gate Beta.app", with the actual payload inside a
-// SharedSupport DMG.  Detect such volumes by enumerating the root directory:
-// the installer app itself is the marker, since the payload cannot be probed
-// through the UEFI file system.
+// Locate the installer app bundle on the volume (e.g.
+// "Install macOS 27 Golden Gate Beta.app") and open its directory handle.
 //
 STATIC
 BOOLEAN
-IsInstallerAppAtRoot (
-  IN  EFI_FILE_PROTOCOL  *RootDirectory
+FindInstallerApp (
+  IN  EFI_FILE_PROTOCOL  *RootDirectory,
+  OUT EFI_FILE_PROTOCOL  **AppDir OPTIONAL
   )
 {
   EFI_STATUS     Status;
@@ -589,8 +744,15 @@ IsInstallerAppAtRoot (
       if (  ((Info->Attribute & EFI_FILE_DIRECTORY) != 0)
          && (StrnCmp (Info->FileName, L"Install macOS", 13) == 0)
          && (StrLen (Info->FileName) >= 4)
-         && (StrnCmp (Info->FileName + StrLen (Info->FileName) - 4, L".app", 4) == 0))
+         && (CompareMem (Info->FileName + StrLen (Info->FileName) - 4, L".app", 4) == 0))
       {
+        if (AppDir != NULL) {
+          Status = RootDirectory->Open (RootDirectory, AppDir, Info->FileName, EFI_FILE_MODE_READ, 0);
+          if (EFI_ERROR (Status)) {
+            FreePool (Buffer);
+            return FALSE;
+          }
+        }
         Result = TRUE;
         break;
       }
@@ -605,6 +767,21 @@ IsInstallerAppAtRoot (
 
   FreePool (Buffer);
   return Result;
+}
+
+//
+// Detect a volume carrying a self-contained installer app such as
+// "Install macOS 27 Golden Gate Beta.app"; the app itself is the marker,
+// since the payload is stored inside the bundle and cannot be probed through
+// the UEFI file system.
+//
+STATIC
+BOOLEAN
+IsInstallerAppAtRoot (
+  IN  EFI_FILE_PROTOCOL  *RootDirectory
+  )
+{
+  return FindInstallerApp (RootDirectory, NULL);
 }
 
 //
@@ -657,6 +834,81 @@ IsInstallerVolume (
   // classic installer paths.
   //
   return IsArm64BootEfi (RootDirectory);
+}
+
+//
+// Boot the installer directly from the app bundle: open
+// "Contents\SharedSupport" inside the installer app and probe the DMG
+// archives there for the kernelcache (no extraction needed).
+//
+STATIC
+VOID *
+ReadKernelFromAppDmg (
+  IN  EFI_FILE_PROTOCOL  *RootDirectory,
+  OUT UINT32             *OutSize
+  )
+{
+  EFI_STATUS         Status;
+  EFI_FILE_PROTOCOL  *AppDir  = NULL;
+  EFI_FILE_PROTOCOL  *SsDir   = NULL;
+  EFI_FILE_PROTOCOL  *DmgFile = NULL;
+  UINT8              *Buffer;
+  UINTN               BufferSize;
+  UINTN               ReadSize;
+  EFI_FILE_INFO      *Info;
+  VOID               *Kernel;
+
+  if (!FindInstallerApp (RootDirectory, &AppDir)) {
+    return NULL;
+  }
+
+  Status = AppDir->Open (AppDir, &SsDir, L"Contents\\SharedSupport", EFI_FILE_MODE_READ, 0);
+  if (EFI_ERROR (Status)) {
+    AppDir->Close (AppDir);
+    return NULL;
+  }
+
+  Kernel     = NULL;
+  BufferSize = SIZE_256KB;
+  Buffer     = AllocatePool (BufferSize);
+  if (Buffer != NULL) {
+    for (;;) {
+      ReadSize = BufferSize;
+      Status = SsDir->Read (SsDir, &ReadSize, Buffer);
+      if (EFI_ERROR (Status) || (ReadSize == 0)) {
+        break;
+      }
+      Info = (EFI_FILE_INFO *)Buffer;
+      while ((UINTN)Info < (UINTN)Buffer + ReadSize) {
+        if (Info->Size == 0) {
+          break;
+        }
+        if (  ((Info->Attribute & EFI_FILE_DIRECTORY) == 0)
+           && (StrLen (Info->FileName) >= 4)
+           && (CompareMem (Info->FileName + StrLen (Info->FileName) - 4, L".dmg", 4) == 0))
+        {
+          Status = SsDir->Open (SsDir, &DmgFile, Info->FileName, EFI_FILE_MODE_READ, 0);
+          if (!EFI_ERROR (Status)) {
+            Kernel = ReadKernelFromDmg (DmgFile, OutSize);
+            DmgFile->Close (DmgFile);
+            DmgFile = NULL;
+            if (Kernel != NULL) {
+              break;
+            }
+          }
+        }
+        Info = (EFI_FILE_INFO *)((UINT8 *)Info + Info->Size);
+      }
+      if (Kernel != NULL) {
+        break;
+      }
+    }
+    FreePool (Buffer);
+  }
+
+  SsDir->Close (SsDir);
+  AppDir->Close (AppDir);
+  return Kernel;
 }
 
 //
@@ -2047,6 +2299,20 @@ DirectLoadKernel (
       }
 
       if (EFI_ERROR (Status)) {
+        if (KernelBuffer == NULL) {
+          //
+          // The installer is the app bundle: boot the kernel directly from
+          // the app's SharedSupport DMG — no extraction needed.
+          //
+          KernelBuffer = ReadKernelFromAppDmg (RootDirectory, &KernelSize);
+          if (KernelBuffer != NULL) {
+            AllocatedSize = KernelSize;
+            Is32Bit       = FALSE;
+            Status        = EFI_SUCCESS;
+            DEBUG ((DEBUG_INFO, "DirectKernel: Extracted kernel from installer app DMG: %u bytes\n", KernelSize));
+            goto SKIP_READ_APPLE_KERNEL;
+          }
+        }
         DEBUG ((DEBUG_ERROR, "DirectKernel: Failed to open kernel - %r\n", Status));
         RootDirectory->Close (RootDirectory);
         return Status;

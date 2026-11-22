@@ -7,6 +7,9 @@ OpenCore Changelog
 - Fixed OpenDbvX64Dxe installer detection for self-contained installer apps
   (e.g. "Install macOS 27 Golden Gate Beta.app") and for MobileAsset
   kernelcache ZIPs; hardened IsArm64BootEfi PE header parsing
+- Added booting the installer directly from the installer app bundle: the
+  kernelcache is read through the SharedSupport DMG on the fly (no manual
+  extraction of the installer image needed)
 - Added `OcDbtLib`, an ARM64 to x86_64 dynamic binary translation library with
   block caching, system register emulation, MMIO/PCIe host layer, per-CPU slots and
   phys windows, plus additive Stela-inspired profiling and
