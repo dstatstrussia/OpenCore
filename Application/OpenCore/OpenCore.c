@@ -78,6 +78,65 @@ STATIC
 CHAR16 *
   mStorageRoot;
 
+//
+// Early boot-stage breadcrumbs. Written directly to the boot EFI partition
+// (ocstage.txt) before the normal log protocol is up, so a crash/reboot in
+// the booter or early init phase still leaves a trail of the last stage reached.
+//
+STATIC EFI_SIMPLE_FILE_SYSTEM_PROTOCOL  *mStageFs;
+STATIC UINT32                           mStageCount;
+
+STATIC
+VOID
+OcStageMark (
+  IN CONST CHAR8  *Stage
+  )
+{
+  EFI_STATUS         Status;
+  EFI_FILE_PROTOCOL  *Root;
+  EFI_FILE_PROTOCOL  *File;
+  CHAR8              Line[160];
+  CHAR16             UniLine[160];
+  UINTN              Len;
+  UINTN              WriteSize;
+
+  //
+  // Print to screen first - most reliable, bypasses filesystem
+  //
+  Len = AsciiSPrint (Line, sizeof (Line), "OCSTAGE: %a", Stage);
+  if (gST->ConOut != NULL) {
+    UnicodeSPrint (UniLine, sizeof (UniLine), L"%a\n", Stage);
+    gST->ConOut->OutputString (gST->ConOut, UniLine);
+  }
+
+  if (mStageFs == NULL) {
+    return;
+  }
+
+  Status = mStageFs->OpenVolume (mStageFs, &Root);
+  if (EFI_ERROR (Status)) {
+    return;
+  }
+
+  Status = Root->Open (
+                   Root,
+                   &File,
+                   L"ocstage.txt",
+                   EFI_FILE_MODE_CREATE | EFI_FILE_MODE_READ | EFI_FILE_MODE_WRITE,
+                   0
+                   );
+  if (!EFI_ERROR (Status)) {
+    File->SetPosition (File, 0xFFFFFFFFFFFFFFFFULL);
+    Len       = AsciiSPrint (Line, sizeof (Line), "%03u %a\n", mStageCount++, Stage);
+    WriteSize = Len;
+    File->Write (File, &WriteSize, Line);
+    File->Flush (File);
+    File->Close (File);
+  }
+
+  Root->Close (Root);
+}
+
 STATIC
 EFI_STATUS
 EFIAPI
@@ -121,7 +180,9 @@ OcMain (
   EFI_STATUS            Status;
   OC_PRIVILEGE_CONTEXT  *Privilege;
 
+  OcStageMark ("OcMain: enter");
   DEBUG ((DEBUG_INFO, "OC: OcMiscEarlyInit...\n"));
+  OcStageMark ("OcMiscEarlyInit: begin");
   Status = OcMiscEarlyInit (
              Storage,
              &mOpenCoreConfiguration,
@@ -129,14 +190,20 @@ OcMain (
              );
 
   if (EFI_ERROR (Status)) {
+    OcStageMark ("OcMiscEarlyInit: FAILED");
     return;
   }
 
+  OcStageMark ("OcMiscEarlyInit: done");
   OcCpuScanProcessor (&mOpenCoreCpuInfo);
+  OcStageMark ("OcCpuScanProcessor: done");
 
   DEBUG ((DEBUG_INFO, "OC: OcLoadNvramSupport...\n"));
+  OcStageMark ("OcLoadNvramSupport: begin");
   OcLoadNvramSupport (Storage, &mOpenCoreConfiguration);
+  OcStageMark ("OcLoadNvramSupport: done");
   DEBUG ((DEBUG_INFO, "OC: OcMiscMiddleInit...\n"));
+  OcStageMark ("OcMiscMiddleInit: begin");
   OcMiscMiddleInit (
     Storage,
     &mOpenCoreConfiguration,
@@ -145,22 +212,35 @@ OcMain (
     mStorageHandle,
     mOpenCoreConfiguration.Booter.Quirks.ForceBooterSignature ? mOpenCoreBooterHash : NULL
     );
+  OcStageMark ("OcMiscMiddleInit: done");
   DEBUG ((DEBUG_INFO, "OC: OcLoadUefiSupport...\n"));
+  OcStageMark ("OcLoadUefiSupport: begin");
   OcLoadUefiSupport (Storage, &mOpenCoreConfiguration, &mOpenCoreCpuInfo, mOpenCoreBooterHash);
+  OcStageMark ("OcLoadUefiSupport: done");
   DEBUG_CODE_BEGIN ();
   DEBUG ((DEBUG_INFO, "OC: OcMiscLoadSystemReport...\n"));
   OcMiscLoadSystemReport (&mOpenCoreConfiguration, mStorageHandle);
   DEBUG_CODE_END ();
   DEBUG ((DEBUG_INFO, "OC: OcLoadAcpiSupport...\n"));
+  OcStageMark ("OcLoadAcpiSupport: begin");
   OcLoadAcpiSupport (&mOpenCoreStorage, &mOpenCoreConfiguration);
+  OcStageMark ("OcLoadAcpiSupport: done");
   DEBUG ((DEBUG_INFO, "OC: OcLoadPlatformSupport...\n"));
+  OcStageMark ("OcLoadPlatformSupport: begin");
   OcLoadPlatformSupport (&mOpenCoreConfiguration, &mOpenCoreCpuInfo);
+  OcStageMark ("OcLoadPlatformSupport: done");
   DEBUG ((DEBUG_INFO, "OC: OcLoadDevPropsSupport...\n"));
+  OcStageMark ("OcLoadDevPropsSupport: begin");
   OcLoadDevPropsSupport (&mOpenCoreConfiguration);
+  OcStageMark ("OcLoadDevPropsSupport: done");
   DEBUG ((DEBUG_INFO, "OC: OcMiscLateInit...\n"));
+  OcStageMark ("OcMiscLateInit: begin");
   OcMiscLateInit (Storage, &mOpenCoreConfiguration);
+  OcStageMark ("OcMiscLateInit: done");
   DEBUG ((DEBUG_INFO, "OC: OcLoadKernelSupport...\n"));
+  OcStageMark ("OcLoadKernelSupport: begin");
   OcLoadKernelSupport (&mOpenCoreStorage, &mOpenCoreConfiguration, &mOpenCoreCpuInfo);
+  OcStageMark ("OcLoadKernelSupport: done");
 
   if (mOpenCoreConfiguration.Misc.Security.EnablePassword) {
     mOpenCorePrivilege.CurrentLevel = OcPrivilegeUnauthorized;
@@ -174,6 +254,7 @@ OcMain (
   }
 
   DEBUG ((DEBUG_INFO, "OC: All green, starting boot management...\n"));
+  OcStageMark ("OcMiscBoot: begin (picker)");
 
   OcMiscBoot (
     &mOpenCoreStorage,
@@ -198,6 +279,7 @@ OcBootstrap (
   UINTN                     StoragePathSize;
 
   mOpenCoreVaultKey = OcGetVaultKey ();
+  OcStageMark ("OcBootstrap: enter");
   mStorageHandle    = DeviceHandle;
 
   //
@@ -246,9 +328,11 @@ OcBootstrap (
              );
 
   if (!EFI_ERROR (Status)) {
+    OcStageMark ("OcBootstrap: storage init done");
     OcMain (&mOpenCoreStorage, LoadPath);
     OcStorageFree (&mOpenCoreStorage);
   } else {
+    OcStageMark ("OcBootstrap: storage init FAILED");
     DEBUG ((DEBUG_ERROR, "OC: Failed to open root FS - %r!\n", Status));
     if (Status == EFI_SECURITY_VIOLATION) {
       CpuDeadLoop (); ///< Should not return.
@@ -290,6 +374,7 @@ UefiMain (
   EFI_DEVICE_PATH_PROTOCOL         *AbsPath;
 
   DEBUG ((DEBUG_INFO, "OC: Starting OpenCore...\n"));
+  OcStageMark ("UefiMain: enter");
 
   //
   // We have just started by bootstrap or manually at EFI/OC/OpenCore.efi.
@@ -298,6 +383,7 @@ UefiMain (
   //
 
   Bootstrap = NULL;
+  OcStageMark ("UefiMain: before locate bootstrap");
   Status    = gBS->LocateProtocol (
                      &gOcBootstrapProtocolGuid,
                      NULL,
@@ -343,9 +429,12 @@ UefiMain (
                  LoadedImage->FilePath
                  );
   if (FileSystem == NULL) {
+    OcStageMark ("UefiMain: NO filesystem");
     DEBUG ((DEBUG_ERROR, "OC: Failed to locate file system\n"));
     return EFI_INVALID_PARAMETER;
   }
+  mStageFs = FileSystem;
+  OcStageMark ("UefiMain: filesystem located");
 
   AbsPath = AbsoluteDevicePath (LoadedImage->DeviceHandle, LoadedImage->FilePath);
   if (AbsPath == NULL) {
@@ -363,11 +452,13 @@ UefiMain (
                            NULL
                            );
   if (EFI_ERROR (Status)) {
+    OcStageMark ("UefiMain: bootstrap install FAILED");
     DEBUG ((DEBUG_ERROR, "OC: Failed to install bootstrap protocol - %r\n", Status));
     FreePool (AbsPath);
     return Status;
   }
 
+  OcStageMark ("UefiMain: calling OcBootstrap");
   OcBootstrap (LoadedImage->DeviceHandle, FileSystem, AbsPath);
   DEBUG ((DEBUG_ERROR, "OC: Failed to boot\n"));
   CpuDeadLoop ();
