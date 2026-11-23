@@ -71,8 +71,19 @@ RaiseScreenVerbose (
     return;
   }
 
+  //
+  // Only raise the on-screen debug level. Never force OC_LOG_FILE here:
+  // on an OpenCore instance that has no log file open, setting that option
+  // makes the very next log entry write through a null file handle and
+  // crash the boot. Leave Options untouched and honour the protocol revision
+  // so a mismatched (older) OpenCore is not written through a wrong layout.
+  //
+  if (OcLog->Revision != OC_LOG_REVISION) {
+    DEBUG ((DEBUG_WARN, "DBT: OcLog revision 0x%X != 0x%X, leaving log settings unchanged\n", OcLog->Revision, OC_LOG_REVISION));
+    return;
+  }
+
   OcLog->DisplayLevel = (UINTN)0xFFFFFFFF;
-  OcLog->Options     |= OC_LOG_CONSOLE | OC_LOG_FILE;
   OcLog->DisplayDelay = 0;
   DEBUG ((DEBUG_INFO, "DBT: on-screen log level raised to 0xFFFFFFFF\n"));
 }
@@ -511,6 +522,7 @@ ReadKernelFromDmg (
   UINTN          ReadSize;
   UINT64         Off;
   UINT64         DmgSize;
+  UINT64         MinOff;
   UINTN          I;
   VOID           *Kernel;
 
@@ -543,7 +555,15 @@ ReadKernelFromDmg (
   Kernel = NULL;
   Off    = DmgSize;
 
-  while ((Off > 0) && (Kernel == NULL)) {
+  //
+  // A ZIP end-of-central-directory record only ever sits near the tail of the
+  // image. Scanning the whole multi-GB installer DMG backwards would read the
+  // entire volume over USB and stall the boot, so bound the search to a tail
+  // window instead.
+  //
+  MinOff = (DmgSize > (64ULL * 1024 * 1024)) ? (DmgSize - (64ULL * 1024 * 1024)) : 0;
+
+  while ((Off > MinOff) && (Kernel == NULL)) {
     UINT64  ReadAt;
     UINTN   ToRead;
 
@@ -574,6 +594,7 @@ ReadKernelFromDmg (
       {
         UINT8  EocdBuf[128];
         UINT64 EocdPos = ReadAt + I;
+        UINTN  EocdReadSize;
         UINT32 CentralDirSize;
         UINT64 CentralDirOffset;
         UINT64 Base;
@@ -582,9 +603,15 @@ ReadKernelFromDmg (
         if (EFI_ERROR (Status)) {
           continue;
         }
-        ReadSize = sizeof (EocdBuf);
-        Status = DmgFile->Read (DmgFile, &ReadSize, EocdBuf);
-        if (EFI_ERROR (Status) || (*(UINT32 *)EocdBuf != ZIP_EOCD_SIGNATURE)) {
+
+        //
+        // Use a separate size variable: ReadSize belongs to the outer chunk
+        // loop and must not be overwritten here, or the backwards scan is
+        // truncated/corrupted after the first candidate.
+        //
+        EocdReadSize = sizeof (EocdBuf);
+        Status = DmgFile->Read (DmgFile, &EocdReadSize, EocdBuf);
+        if (EFI_ERROR (Status) || (EocdReadSize < 4) || (*(UINT32 *)EocdBuf != ZIP_EOCD_SIGNATURE)) {
           continue;
         }
 
@@ -3810,6 +3837,10 @@ OcFreeDbtBootEntries (
     }
     if ((*Entries)[Index].Path != NULL) {
       FreePool ((VOID *)(UINTN)(*Entries)[Index].Path);
+    }
+
+    if ((*Entries)[Index].UnmanagedDevicePath != NULL) {
+      FreePool ((VOID *)(UINTN)(*Entries)[Index].UnmanagedDevicePath);
     }
   }
 
