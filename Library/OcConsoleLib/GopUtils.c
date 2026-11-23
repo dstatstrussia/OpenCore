@@ -67,10 +67,16 @@ OcGopModeBytesPerPixel (
       return EFI_INVALID_PARAMETER;
   }
 
+  //
+  // Merge the masks with bitwise OR. Logical OR would collapse every
+  // non-zero mask set to 1, making HighBitSet32 below return 0 and thus
+  // computing a zero bytes-per-pixel value. Legacy GOPs (BiosVideo) report
+  // PixelBitMask modes, and a zero size makes all of them look unusable.
+  //
   MergedMasks = Mode->Info->PixelInformation.RedMask
-                || Mode->Info->PixelInformation.GreenMask
-                || Mode->Info->PixelInformation.BlueMask
-                || Mode->Info->PixelInformation.ReservedMask;
+                | Mode->Info->PixelInformation.GreenMask
+                | Mode->Info->PixelInformation.BlueMask
+                | Mode->Info->PixelInformation.ReservedMask;
 
   if (MergedMasks == 0) {
     return EFI_INVALID_PARAMETER;
@@ -127,6 +133,7 @@ OcGopModeUsable (
 {
   UINTN   Size;
   UINTN   BytesPerPixel;
+  UINTN   ScanLine;
   UINT32  MergedMasks;
 
   if (  (Info == NULL)
@@ -151,15 +158,26 @@ OcGopModeUsable (
       break;
 
     case PixelBitMask:
+      //
+      // Bitwise OR is essential here: with logical OR the merged value is
+      // always 1 for any non-zero mask, so HighBitSet32 returns 0 and the
+      // computed bytes-per-pixel (and the frame buffer size) becomes zero.
+      // That makes every PixelBitMask mode look unusable, which is exactly
+      // the mode format reported by the BiosVideo GOP on legacy systems.
+      //
       MergedMasks = Info->PixelInformation.RedMask
-                    || Info->PixelInformation.GreenMask
-                    || Info->PixelInformation.BlueMask
-                    || Info->PixelInformation.ReservedMask;
+                    | Info->PixelInformation.GreenMask
+                    | Info->PixelInformation.BlueMask
+                    | Info->PixelInformation.ReservedMask;
       if (MergedMasks == 0) {
         return EFI_INVALID_PARAMETER;
       }
 
       BytesPerPixel = (UINTN)((HighBitSet32 (MergedMasks) + 7) / 8);
+      if (BytesPerPixel == 0) {
+        return EFI_UNSUPPORTED;
+      }
+
       break;
 
     default:
@@ -167,14 +185,20 @@ OcGopModeUsable (
   }
 
   if (  (Info->HorizontalResolution == 0)
-     || (Info->VerticalResolution == 0)
-     || (Info->PixelsPerScanLine == 0))
+     || (Info->VerticalResolution == 0))
   {
     return EFI_NOT_FOUND;
   }
 
+  //
+  // Some legacy GOPs leave PixelsPerScanLine zero even for otherwise valid
+  // modes. Rejecting those modes leaves the console with no usable mode at
+  // all, so fall back to the horizontal resolution as the stride.
+  //
+  ScanLine = Info->PixelsPerScanLine != 0 ? Info->PixelsPerScanLine : Info->HorizontalResolution;
+
   if (BaseOverflowTriMulUN (
-        Info->PixelsPerScanLine,
+        ScanLine,
         Info->VerticalResolution,
         BytesPerPixel,
         &Size
