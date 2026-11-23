@@ -46,6 +46,7 @@ OcSetConsoleResolutionForProtocol (
   UINTN                                 SizeOfInfo;
   EFI_GRAPHICS_OUTPUT_MODE_INFORMATION  *Info;
   BOOLEAN                               SetMax;
+  UINTN                                 FrameBufferSize;
 
   SetMax = Width == 0 && Height == 0;
 
@@ -86,6 +87,18 @@ OcSetConsoleResolutionForProtocol (
 
     if (EFI_ERROR (Status)) {
       DEBUG ((DEBUG_INFO, "OCC: Mode %u failure - %r\n", ModeIndex, Status));
+      continue;
+    }
+
+    //
+    // GOPs of Intel HD3000 and NVIDIA GT 520MX report modes with a null or
+    // too-small frame buffer that still match the requested resolution;
+    // selecting them leaves the display blank, so they are skipped.
+    //
+    Status = OcGopModeUsable (Info, &FrameBufferSize);
+    if (EFI_ERROR (Status)) {
+      DEBUG ((DEBUG_INFO, "OCC: Mode %u unusable - %r\n", ModeIndex, Status));
+      FreePool (Info);
       continue;
     }
 

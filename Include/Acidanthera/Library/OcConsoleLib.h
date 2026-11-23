@@ -35,6 +35,16 @@ typedef enum {
 } OC_CONSOLE_RENDERER;
 
 /**
+  GPU model families supported for console/boot-picker display on older
+  adapters, used by OcGpuKindOf.
+**/
+typedef enum {
+  OcGpuKindUnknown,
+  OcGpuKindHd3000,
+  OcGpuKindGt520Mx
+} OC_GPU_KIND;
+
+/**
   Special commands sent to Builtin text renderer through TestString.
 **/
 /**
@@ -226,6 +236,76 @@ EFI_STATUS
 OcGopModeSafeFrameBufferSize (
   IN  EFI_GRAPHICS_OUTPUT_PROTOCOL_MODE  *Mode,
   OUT UINTN                              *FrameBufferSize
+  );
+
+/**
+  Check that the given GOP mode info describes a mode whose frame buffer can
+  hold the mode pixels, skipping modes that some older GOPs (Intel HD3000,
+  NVIDIA GT 520MX) report with a null or undersized frame buffer.
+
+  Modes in PixelBltOnly pixel format carry no frame buffer and are always
+  accepted with a zero size.
+
+  @param[in]  Info               GOP mode info to validate.
+  @param[out] FrameBufferSize    Frame buffer size needed by the mode.
+
+  @retval EFI_SUCCESS             The mode is usable (size may be zero for
+                                  PixelBltOnly modes).
+  @retval EFI_INVALID_PARAMETER   The mode info is outside valid ranges.
+  @retval EFI_NOT_FOUND           The mode has a zero resolution or the frame
+                                  buffer cannot hold it.
+  @retval EFI_UNSUPPORTED         The pixel format is not supported.
+**/
+EFI_STATUS
+OcGopModeUsable (
+  IN  EFI_GRAPHICS_OUTPUT_MODE_INFORMATION  *Info,
+  OUT UINTN                                 *FrameBufferSize
+  );
+
+/**
+  Return whether the device is a supported Intel HD3000 (Sandy Bridge) adapter.
+
+  @param[in]  VendorId            PCI vendor ID (0x8086 for Intel).
+  @param[in]  DeviceId            PCI device ID.
+
+  @retval TRUE                    The device is HD3000.
+  @retval FALSE                   The device is not.
+**/
+BOOLEAN
+OcGpuIsHd3000 (
+  IN UINT16  VendorId,
+  IN UINT16  DeviceId
+  );
+
+/**
+  Return whether the device is a supported NVIDIA GT 520M/520MX (Fermi)
+  adapter.
+
+  @param[in]  VendorId            PCI vendor ID (0x10DE for NVIDIA).
+  @param[in]  DeviceId            PCI device ID.
+
+  @retval TRUE                    The device is GT 520M/520MX.
+  @retval FALSE                   The device is not.
+**/
+BOOLEAN
+OcGpuIsGt520Mx (
+  IN UINT16  VendorId,
+  IN UINT16  DeviceId
+  );
+
+/**
+  Return the model kind of the display adapter.
+
+  @param[in]  VendorId            PCI vendor ID.
+  @param[in]  DeviceId            PCI device ID.
+
+  @return                         OcGpuKindHd3000, OcGpuKindGt520Mx or
+                                  OcGpuKindUnknown.
+**/
+OC_GPU_KIND
+OcGpuKindOf (
+  IN UINT16  VendorId,
+  IN UINT16  DeviceId
   );
 
 /**

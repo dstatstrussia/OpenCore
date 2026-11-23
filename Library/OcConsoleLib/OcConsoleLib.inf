@@ -51,6 +51,7 @@
   GopInfoDump.c
   GopUtils.c
   GopPassThrough.c
+  GpuSupport.c
   OcConsoleLib.c
   OcConsoleLibInternal.h
   ResolutionParsing.c

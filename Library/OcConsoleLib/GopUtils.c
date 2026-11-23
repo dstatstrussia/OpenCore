@@ -119,6 +119,79 @@ OcGopModeSafeFrameBufferSize (
   return EFI_SUCCESS;
 }
 
+EFI_STATUS
+OcGopModeUsable (
+  IN  EFI_GRAPHICS_OUTPUT_MODE_INFORMATION  *Info,
+  OUT UINTN                                 *FrameBufferSize
+  )
+{
+  UINTN   Size;
+  UINTN   BytesPerPixel;
+  UINT32  MergedMasks;
+
+  if (  (Info == NULL)
+     || (FrameBufferSize == NULL))
+  {
+    return EFI_INVALID_PARAMETER;
+  }
+
+  if (Info->PixelFormat == PixelBltOnly) {
+    //
+    // BltOnly modes carry no frame buffer, so nothing to validate; they
+    // are accepted, as before.
+    //
+    *FrameBufferSize = 0;
+    return EFI_SUCCESS;
+  }
+
+  switch (Info->PixelFormat) {
+    case PixelRedGreenBlueReserved8BitPerColor:
+    case PixelBlueGreenRedReserved8BitPerColor:
+      BytesPerPixel = sizeof (EFI_GRAPHICS_OUTPUT_BLT_PIXEL);
+      break;
+
+    case PixelBitMask:
+      MergedMasks = Info->PixelInformation.RedMask
+                    || Info->PixelInformation.GreenMask
+                    || Info->PixelInformation.BlueMask
+                    || Info->PixelInformation.ReservedMask;
+      if (MergedMasks == 0) {
+        return EFI_INVALID_PARAMETER;
+      }
+
+      BytesPerPixel = (UINTN)((HighBitSet32 (MergedMasks) + 7) / 8);
+      break;
+
+    default:
+      return EFI_UNSUPPORTED;
+  }
+
+  if (  (Info->HorizontalResolution == 0)
+     || (Info->VerticalResolution == 0)
+     || (Info->PixelsPerScanLine == 0))
+  {
+    return EFI_NOT_FOUND;
+  }
+
+  if (BaseOverflowTriMulUN (
+        Info->PixelsPerScanLine,
+        Info->VerticalResolution,
+        BytesPerPixel,
+        &Size
+        ))
+  {
+    return EFI_INVALID_PARAMETER;
+  }
+
+  if (Size == 0) {
+    return EFI_NOT_FOUND;
+  }
+
+  *FrameBufferSize = Size;
+
+  return EFI_SUCCESS;
+}
+
 //
 // Use PAT to enable write-combining caching (burst mode) on GOP memory,
 // when it is suppported but firmware has not set it up.
