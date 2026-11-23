@@ -36,13 +36,13 @@
 // translations patches into any host encoding it uses.
 //
 typedef struct {
-  CONST CHAR8   *Arm64Name;
-  CONST CHAR8   *X86_64Name;
+  CONST CHAR8    *Arm64Name;
+  CONST CHAR8    *X86_64Name;
 } OC_ARM64_X86_64_REG_MAP;
 
 STATIC CONST OC_ARM64_X86_64_REG_MAP  mArm64ToX8664RegMap[] = {
   { "x0",  "rax" }, { "x1",  "rbx" }, { "x2",  "rcx" }, { "x3",  "rdx" },
-  { "x4",  "rsi" }, { "x5",  "rdi" }, { "x6",  "r8" },  { "x7",  "r9" },
+  { "x4",  "rsi" }, { "x5",  "rdi" }, { "x6",  "r8"  }, { "x7",  "r9"  },
   { "x8",  "r10" }, { "x9",  "r11" }, { "x10", "r12" }, { "x11", "r13" },
   { "x12", "r14" }, { "x13", "r15" },
   { "sp",  "rsp" },
@@ -53,9 +53,9 @@ STATIC CONST OC_ARM64_X86_64_REG_MAP  mArm64ToX8664RegMap[] = {
 // and the x86_64 machine code that implements it.
 //
 typedef struct {
-  CONST CHAR8   *Form;
-  CONST UINT8   *Code;
-  UINTN         CodeSize;
+  CONST CHAR8    *Form;
+  CONST UINT8    *Code;
+  UINTN          CodeSize;
 } OC_ARM64_X86_64_TRANSLATION;
 
 //
