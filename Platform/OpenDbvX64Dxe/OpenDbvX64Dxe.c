@@ -758,12 +758,24 @@ FindInstallerApp (
   for (;;) {
     ReadSize = BufferSize;
     Status   = RootDirectory->Read (RootDirectory, &ReadSize, Buffer);
-    if (EFI_ERROR (Status) || (ReadSize == 0)) {
+    if (EFI_ERROR (Status)) {
+      break;
+    }
+
+    //
+    // A file system is allowed to report a larger ReadSize than the
+    // allocated buffer; never let the info-walk run past the buffer.
+    //
+    if (ReadSize > BufferSize) {
+      ReadSize = BufferSize;
+    }
+
+    if (ReadSize == 0) {
       break;
     }
 
     Info = (EFI_FILE_INFO *)Buffer;
-    while ((UINTN)Info < (UINTN)Buffer + ReadSize) {
+    while ((UINTN)Info + sizeof (EFI_FILE_INFO) <= (UINTN)Buffer + ReadSize) {
       if (Info->Size == 0) {
         break;
       }
@@ -3583,17 +3595,17 @@ OcGetDbtBootEntries (
     Status = EFI_NOT_FOUND;
 
     FileInfoSize = 0;
-    BootDirectory->GetInfo (BootDirectory, &gEfiFileInfoGuid, &FileInfoSize, NULL);
-    if (FileInfoSize > 0) {
+    if (!EFI_ERROR (BootDirectory->GetInfo (BootDirectory, &gEfiFileInfoGuid, &FileInfoSize, NULL)) && (FileInfoSize > 0)) {
       Status = EFI_SUCCESS;
       FileInfo = AllocatePool (FileInfoSize);
       if (FileInfo != NULL) {
-        BootDirectory->GetInfo (BootDirectory, &gEfiFileInfoGuid, &FileInfoSize, FileInfo);
-        if ((FileInfo->Attribute & EFI_FILE_DIRECTORY) != 0) {
-          DEBUG ((DEBUG_INFO, "DBT: Traditional installer is a directory, EntryCount++\n"));
-          ++EntryCount;
-        } else {
-          DEBUG ((DEBUG_INFO, "DBT: Traditional installer is NOT a directory (attributes: 0x%x)\n", FileInfo->Attribute));
+        if (!EFI_ERROR (BootDirectory->GetInfo (BootDirectory, &gEfiFileInfoGuid, &FileInfoSize, FileInfo))) {
+          if ((FileInfo->Attribute & EFI_FILE_DIRECTORY) != 0) {
+            DEBUG ((DEBUG_INFO, "DBT: Traditional installer is a directory, EntryCount++\n"));
+            ++EntryCount;
+          } else {
+            DEBUG ((DEBUG_INFO, "DBT: Traditional installer is NOT a directory (attributes: 0x%x)\n", FileInfo->Attribute));
+          }
         }
         FreePool (FileInfo);
       }
