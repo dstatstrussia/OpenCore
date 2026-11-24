@@ -51,6 +51,48 @@ STATIC EFI_HANDLE   gInstallerDevice = NULL;
 STATIC EFI_HANDLE   gX86ImageHandle  = NULL;
 
 //
+// Early breadcrumbs for black-screen/reboot diagnosis: append each stage to
+// dbtstage.txt on the boot volume and mirror to the console. Best effort.
+//
+STATIC
+VOID
+DbtStageMark (
+  IN CONST CHAR8  *Stage
+  )
+{
+  EFI_STATUS                       Status;
+  EFI_SIMPLE_FILE_SYSTEM_PROTOCOL  *Fs;
+  EFI_FILE_PROTOCOL                *Root;
+  EFI_FILE_PROTOCOL                *File;
+  CHAR8                            Line[160];
+  UINTN                            Size;
+
+  AsciiSPrint (Line, sizeof (Line), "DBTSTAGE: %a\n", Stage);
+  DEBUG ((DEBUG_INFO, "%a\n", Stage));
+
+  Status = gBS->LocateProtocol (&gEfiSimpleFileSystemProtocolGuid, NULL, (VOID **)&Fs);
+  if (EFI_ERROR (Status) || Fs == NULL) {
+    return;
+  }
+
+  Status = Fs->OpenVolume (Fs, &Root);
+  if (EFI_ERROR (Status)) {
+    return;
+  }
+
+  Status = Root->Open (Root, &File, L"dbtstage.txt", EFI_FILE_MODE_CREATE | EFI_FILE_MODE_READ | EFI_FILE_MODE_WRITE, 0);
+  if (!EFI_ERROR (Status)) {
+    File->SetPosition (File, 0xFFFFFFFFFFFFFFFFULL);
+    Size = AsciiStrLen (Line);
+    File->Write (File, &Size, Line);
+    File->Flush (File);
+    File->Close (File);
+  }
+
+  Root->Close (Root);
+}
+
+//
 // Force the OpenCore log protocol to maximum verbosity on both the console
 // and in the log file.  Called from the entry point (covers the picker),
 // from the boot entry enumeration (covers the boot picker scan) and from
@@ -2039,6 +2081,9 @@ X86JumpKernel (
   IN UINT64  BootArgsPhys
   )
 {
+  DbtStageMark ("X86JumpKernel: about to jump");
+  DEBUG ((DEBUG_INFO, "X86JumpKernel: Cr3=0x%llx Entry=0x%llx Args=0x%llx\n", Cr3, EntryPoint, BootArgsPhys));
+
   asm volatile (
     "cli\n\t"
     "movq %%rcx, %%cr3\n\t"
@@ -2098,9 +2143,11 @@ DirectLoadKernel (
 
   DEBUG ((DEBUG_VERBOSE, "DBT_LOADER: DirectLoadKernel entry — Picker=%p VerboseStep=%u\n",
           PickerContext, VerboseStep++));
+  DbtStageMark ("DirectLoadKernel: enter");
 
   if (gDbtContext == NULL) {
     DEBUG ((DEBUG_ERROR, "DBT_LOADER: DBT context is NULL — abort\n"));
+    DbtStageMark ("DirectLoadKernel: gDbtContext NULL");
     return EFI_NOT_STARTED;
   }
 
@@ -3447,12 +3494,14 @@ SKIP_READ_APPLE_KERNEL:
     }
 
     DEBUG ((DEBUG_INFO, "DirectKernel: jumping to xnu x86_64 entry...\n"));
+    DbtStageMark ("DirectLoadKernel: jumping to kernel");
     X86JumpKernel (Cr3, EntryPoint, (UINT64)(UINTN)BootArgs);
 
     //
     // Unreachable: the kernel never returns.
     //
     X86Cleanup:
+    DbtStageMark ("DirectLoadKernel: X86Cleanup reached");
     DEBUG ((DEBUG_ERROR, "DirectKernel: x86 native boot aborted\n"));
     if (TablePhys != 0) {
       gBS->FreePages ((EFI_PHYSICAL_ADDRESS)TablePhys, TablesPages);
@@ -3550,11 +3599,14 @@ OcGetDbtBootEntries (
 
   RaiseScreenVerbose ();
 
+  DbtStageMark ("OcGetDbtBootEntries: enter");
+
   *Entries    = NULL;
   *NumEntries = 0;
 
   if (Device == NULL) {
     DEBUG ((DEBUG_INFO, "DBT: Device is NULL, returning EFI_NOT_FOUND\n"));
+    DbtStageMark ("OcGetDbtBootEntries: Device NULL");
     return EFI_NOT_FOUND;
   }
 
@@ -3726,6 +3778,7 @@ OcGetDbtBootEntries (
   }
 
   DEBUG ((DEBUG_INFO, "DBT: Installer scan complete - EntryCount=%u, IsMacSoftwareUpdate=%d\n", EntryCount, IsMacSoftwareUpdate));
+  DbtStageMark ("OcGetDbtBootEntries: scan complete");
 
   if (EntryCount == 0) {
     //
@@ -3878,6 +3931,7 @@ OpenDbvX64EntryPoint (
 
   DEBUG ((DEBUG_INFO, "DBT: entry image=%p st=%p\n", ImageHandle, SystemTable));
 
+  DbtStageMark ("OpenDbvX64EntryPoint: enter");
   gX86ImageHandle = ImageHandle;
 
   //
@@ -3891,9 +3945,11 @@ OpenDbvX64EntryPoint (
   Status = DbtInitContext (&gDbtContext, 0x100000);
   if (EFI_ERROR (Status)) {
     DEBUG ((DEBUG_ERROR, "DBT: Failed to initialize DBT context - %r\n", Status));
+    DbtStageMark ("OpenDbvX64EntryPoint: DbtInitContext FAILED");
     return Status;
   }
 
+  DbtStageMark ("OpenDbvX64EntryPoint: DbtInitContext done");
   DEBUG ((DEBUG_INFO, "DBT: ARM64->x86_64 initialized for DirectKernel\n"));
 
   //
@@ -3931,6 +3987,7 @@ OpenDbvX64EntryPoint (
   }
   DEBUG ((DEBUG_INFO, "DBT: boot entry protocol installed\n"));
   DEBUG ((DEBUG_INFO, "DBT: driver ready\n"));
+  DbtStageMark ("OpenDbvX64EntryPoint: done");
 
   return EFI_SUCCESS;
 }
