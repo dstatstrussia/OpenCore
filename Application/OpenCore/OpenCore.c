@@ -280,7 +280,7 @@ OcBootstrap (
 
   mOpenCoreVaultKey = OcGetVaultKey ();
   OcStageMark ("OcBootstrap: enter");
-  mStorageHandle    = DeviceHandle;
+  mStorageHandle = DeviceHandle;
 
   //
   // Calculate root path (never freed).
@@ -384,11 +384,11 @@ UefiMain (
 
   Bootstrap = NULL;
   OcStageMark ("UefiMain: before locate bootstrap");
-  Status    = gBS->LocateProtocol (
-                     &gOcBootstrapProtocolGuid,
-                     NULL,
-                     (VOID **)&Bootstrap
-                     );
+  Status = gBS->LocateProtocol (
+                  &gOcBootstrapProtocolGuid,
+                  NULL,
+                  (VOID **)&Bootstrap
+                  );
 
   if (!EFI_ERROR (Status)) {
     DEBUG ((DEBUG_INFO, "OC: Found previous image, aborting\n"));
@@ -433,6 +433,7 @@ UefiMain (
     DEBUG ((DEBUG_ERROR, "OC: Failed to locate file system\n"));
     return EFI_INVALID_PARAMETER;
   }
+
   mStageFs = FileSystem;
   OcStageMark ("UefiMain: filesystem located");
 
