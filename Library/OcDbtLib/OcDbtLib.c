@@ -3824,7 +3824,11 @@ EFI_STATUS DbtInitContext (OUT DBT_CONTEXT **Context, IN UINTN CodeSize) {
   //
   Status = gBS->AllocatePages (AllocateAnyPages, EfiBootServicesCode,
                                EFI_SIZE_TO_PAGES(TotalSize), &Addr);
-  if (EFI_ERROR(Status)) return Status;
+  if (EFI_ERROR(Status)) {
+    DBG ((DEBUG_ERROR, "DBT: AllocatePages FAILED %r (TotalSize=0x%x) - DBT will not load\n",
+          Status, (UINT32)TotalSize));
+    return Status;
+  }
 
   Ctx = (DBT_CONTEXT *)(UINTN)Addr;
   ZeroMem(Ctx, TotalSize);
@@ -4179,7 +4183,9 @@ EFI_STATUS DbtGicSetPriority (IN DBT_CONTEXT *Ctx, IN UINT32 InterruptId, IN UIN
   for (; Idx < Ctx->DeviceCount; Idx++) {
     if (Ctx->Devices[Idx].Registered && (Ctx->Devices[Idx].Gic == &Ctx->GicState)) {
       if (InterruptId < 256) {
-        Ctx->GicState.InterruptSet |= ((UINT32)1U << InterruptId);
+        if (InterruptId < 32) {
+          Ctx->GicState.InterruptSet |= ((UINT32)1U << InterruptId);
+        }
         if ((Priority < 0xF8) || (InterruptId >= 32)) {
           break;
         }
@@ -4194,7 +4200,12 @@ EFI_STATUS DbtGicSetPriority (IN DBT_CONTEXT *Ctx, IN UINT32 InterruptId, IN UIN
 }
 
 STATIC BOOLEAN DbtMmioMatch (IN DBT_MMIO_TRAP *Trap, IN UINT64 Offset, IN UINTN TrapCount) {
-  if (!Trap || !Trap->Active || Offset >= Trap->Size) return FALSE;
+  if (!Trap || !Trap->Active) return FALSE;
+  //
+  // Compare against the trap's real window [BaseAddr, BaseAddr + Size).
+  //
+  if (Offset < Trap->BaseAddr) return FALSE;
+  if ((UINT64)(Offset - Trap->BaseAddr) >= Trap->Size) return FALSE;
   return TRUE;
 }
 
@@ -4221,6 +4232,7 @@ EFI_STATUS DbtMmioRegister (IN DBT_CONTEXT *Ctx,
 
 EFI_STATUS DbtPcieBarMap (IN DBT_CONTEXT *Ctx, IN UINT32 BarIndex, IN UINT64 PhysBase, IN UINT64 Size) {
   if (!Ctx || BarIndex >= 4) return EFI_INVALID_PARAMETER;
+  Ctx->PcieBars[BarIndex].BarIndex = BarIndex;
   Ctx->PcieBars[BarIndex].PhysBase = PhysBase;
   Ctx->PcieBars[BarIndex].Size     = Size;
   Ctx->PcieBars[BarIndex].Enabled  = TRUE;
@@ -4293,10 +4305,10 @@ EFI_STATUS DbtAddDevice (IN DBT_CONTEXT *Ctx, IN CONST CHAR16 *Name) {
   UINTN Idx = Ctx->DeviceCount++;
   ZeroMem (&Ctx->Devices[Idx], sizeof(Ctx->Devices[Idx]));
   Ctx->Devices[Idx].Name    = Name;
-  Ctx->Devices[Idx].Traps   = Ctx->Devices[Idx].Traps;
-  Ctx->Devices[Idx].TrapCount = Ctx->Devices[Idx].TrapCount;
-  Ctx->Devices[Idx].Bars    = Ctx->Devices[Idx].Bars;
-  Ctx->Devices[Idx].BarCount = Ctx->Devices[Idx].BarCount;
+  Ctx->Devices[Idx].Traps   = Ctx->MmioTraps;
+  Ctx->Devices[Idx].TrapCount = Ctx->MmioTrapCount;
+  Ctx->Devices[Idx].Bars    = Ctx->PcieBars;
+  Ctx->Devices[Idx].BarCount = Ctx->PcieBarCount;
   Ctx->Devices[Idx].Gic     = &Ctx->GicState;
   Ctx->Devices[Idx].Registered = TRUE;
   DBG((DEBUG_INFO, "DBT: device registered: %ls (%u traps, %u bars)\n",
