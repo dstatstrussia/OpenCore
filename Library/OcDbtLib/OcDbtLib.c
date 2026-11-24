@@ -1485,9 +1485,9 @@ STATIC UINT8 DbtComputeNzcvSet (IN DBT_CONTEXT *Ctx, IN DBT_FLAG_SET *S) {
   if (S->HasReg2) {
     B = Ctx->ArmState.X[S->Rm];
     switch (S->ShiftKind) {
-      case 1:  B = (S->ShiftAmt == 64) ? 0 : (B << S->ShiftAmt); break;
-      case 2:  B = (S->ShiftAmt == 64) ? 0 : (B >> S->ShiftAmt); break;
-      case 3:  B = (S->ShiftAmt == 64) ? (B >> 63) : ((INT64)B >> S->ShiftAmt); break;
+      case 1:  B = (S->ShiftAmt >= 64) ? 0 : (B << S->ShiftAmt); break;
+      case 2:  B = (S->ShiftAmt >= 64) ? 0 : (B >> S->ShiftAmt); break;
+      case 3:  B = (S->ShiftAmt >= 64) ? 0 : ((INT64)B >> S->ShiftAmt); break;
       default: break;
     }
   } else {
@@ -1663,6 +1663,10 @@ DbtSignExtendSized (
 
   if (Size >= 8) {
     return (INT64)Value;
+  }
+
+  if (Size == 0) {
+    return 0;
   }
 
   Shift   = 64 - Size * 8;

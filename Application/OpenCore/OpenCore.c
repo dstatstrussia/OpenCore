@@ -404,6 +404,7 @@ UefiMain (
 
   if (EFI_ERROR (Status)) {
     DEBUG ((DEBUG_ERROR, "OC: Failed to locate loaded image - %r\n", Status));
+    OcStageMark ("UefiMain: HandleProtocol loaded image FAILED");
     return EFI_NOT_FOUND;
   }
 
@@ -416,6 +417,7 @@ UefiMain (
 
   if (LoadedImage->FilePath == NULL) {
     DEBUG ((DEBUG_ERROR, "OC: Missing boot path\n"));
+    OcStageMark ("UefiMain: FilePath NULL");
     return EFI_INVALID_PARAMETER;
   }
 

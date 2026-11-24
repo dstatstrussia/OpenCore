@@ -44,6 +44,7 @@
   # DXE Drivers (other .inf files for conversion to .ffs may be added here)
   #
   INF  OpenCorePkg/Staging/EnableGop/EnableGop.inf
+  INF  OpenCorePkg/Platform/OpenDbvX64Dxe/OpenDbvX64Dxe.inf
 
 !if ($(ARCH) == X64)
   [FV.EnableGopDirectX64]
