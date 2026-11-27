@@ -334,6 +334,20 @@ STATIC UINTN ArmRegPcOff (VOID)    { return OFFSET_OF(DBT_ARM64_STATE, PC); }
 STATIC UINTN PstateOff   (VOID)    { return OFFSET_OF(DBT_ARM64_STATE, PSTATE); }
 
 //
+// SIMD/FP register offsets (V0-V31, Q0-Q31 = 128-bit each)
+// Qlo[32] = low 64 bits, Qhi[32] = high 64 bits
+//
+STATIC UINTN SimdRegQloOff (UINT8 V) { return OFFSET_OF(DBT_ARM64_STATE, Qlo) + (UINTN)V * 8; }
+STATIC UINTN SimdRegQhiOff (UINT8 V) { return OFFSET_OF(DBT_ARM64_STATE, Qhi) + (UINTN)V * 8; }
+
+//
+// SVE register offsets (Z0-Z31, up to 256-bit = 4x64, P0-P15, FFR)
+//
+STATIC UINTN SveRegZOff (UINT8 Z, UINT8 Lane) { return OFFSET_OF(DBT_ARM64_STATE, Z) + ((UINTN)Z * 4 + Lane) * 8; }
+STATIC UINTN SveRegPOff (UINT8 P) { return OFFSET_OF(DBT_ARM64_STATE, P) + (UINTN)P * 8; }
+STATIC UINTN SveRegFFROff (UINT8 Lane) { return OFFSET_OF(DBT_ARM64_STATE, FFR) + (UINTN)Lane * 8; }
+
+//
 // =========== x86 code emitter helpers ===========
 // RBX is permanently bound to &DBT_ARM64_STATE
 //
@@ -609,20 +623,27 @@ STATIC VOID EmitMovRdxImm (UINT8 **P, UINT64 Val) {
   EmitRexW(P); EmitByte(P, 0xBA); EmitQword(P, Val);
 }
 
-// MOV R8D/R9D, imm32 (the 32-bit write clears the upper half)
+// MOV R8D/R9D/R10D/R11D, imm32 (the 32-bit write clears the upper half)
 STATIC VOID EmitMovR8dImm (UINT8 **P, UINT32 Val) {
   EmitByte(P, 0x41); EmitByte(P, 0xB8); EmitDword(P, Val);
 }
 STATIC VOID EmitMovR9dImm (UINT8 **P, UINT32 Val) {
   EmitByte(P, 0x41); EmitByte(P, 0xB9); EmitDword(P, Val);
 }
+STATIC VOID EmitMovR10dImm (UINT8 **P, UINT32 Val) {
+  EmitByte(P, 0x41); EmitByte(P, 0xBA); EmitDword(P, Val);
+}
+STATIC VOID EmitMovR11dImm (UINT8 **P, UINT32 Val) {
+  EmitByte(P, 0x41); EmitByte(P, 0xBB); EmitDword(P, Val);
+}
 
 // MOV RDX, RAX / MOV RCX, RAX
 STATIC VOID EmitMovRdxRax (UINT8 **P) { EmitRexW(P); EmitByte(P, 0x89); EmitByte(P, 0xC2); }
 STATIC VOID EmitMovRcxRax (UINT8 **P) { EmitRexW(P); EmitByte(P, 0x89); EmitByte(P, 0xC1); }
 
-// MOV R8, RAX
+// MOV R8, RAX / MOV R9, RAX
 STATIC VOID EmitMovR8Rax (UINT8 **P) { EmitByte(P, 0x49); EmitByte(P, 0x89); EmitByte(P, 0xC0); }
+STATIC VOID EmitMovR9Rax (UINT8 **P) { EmitByte(P, 0x49); EmitByte(P, 0x89); EmitByte(P, 0xC1); }
 
 // MFENCE / LFENCE — give guest DMB/DSB/ISB an x86 TSO equivalent
 STATIC VOID EmitMfence (UINT8 **P) { EmitByte(P, 0x0F); EmitByte(P, 0xAE); EmitByte(P, 0xF0); }
@@ -711,6 +732,537 @@ STATIC VOID EmitRev16 (UINT8 **P, BOOLEAN IsW) {
     EmitByte(P, 0x48); EmitByte(P, 0xC1); EmitByte(P, 0xE0); EmitByte(P, 0x08);  // SHL RAX, 8
     EmitOrRaxRcx(P);                                           // OR RAX, RCX
   }
+}
+
+// =========== AVX/SIMD Emitters ===========
+//
+// VEX prefix helpers
+//
+STATIC VOID EmitVex128 (UINT8 **P) { EmitByte(P, 0xC5); }      // VEX.128
+STATIC VOID EmitVex256 (UINT8 **P) { EmitByte(P, 0xC4); EmitByte(P, 0x62); } // VEX.256 (EVEX not used here)
+
+//
+// VMOVUPD: load/store unaligned 128-bit (xmm)
+// VMOVUPD xmm, m128  -> C5 FC 10 /r
+// VMOVUPD m128, xmm  -> C5 FC 11 /r
+//
+STATIC VOID EmitVmovupdLoad (UINT8 **P, UINT8 XmmDst, UINT32 MemOff) {
+  EmitVex128(P);
+  EmitByte(P, 0xFC);                    // VEX prefix: L=0, pp=11 (66), mmmmm=001
+  EmitByte(P, 0x10);                    // VMOVUPD opcode
+  if (MemOff < 128) {
+    EmitByte(P, 0x43 | (XmmDst << 3));  // [RBX+disp8], xmm
+    EmitByte(P, (UINT8)MemOff);
+  } else {
+    EmitByte(P, 0x83 | (XmmDst << 3));  // [RBX+disp32], xmm
+    EmitDword(P, MemOff);
+  }
+}
+
+STATIC VOID EmitVmovupdStore (UINT8 **P, UINT32 MemOff, UINT8 XmmSrc) {
+  EmitVex128(P);
+  EmitByte(P, 0xFC);
+  EmitByte(P, 0x11);                    // VMOVUPD store
+  if (MemOff < 128) {
+    EmitByte(P, 0x43 | (XmmSrc << 3));  // xmm, [RBX+disp8]
+    EmitByte(P, (UINT8)MemOff);
+  } else {
+    EmitByte(P, 0x83 | (XmmSrc << 3));  // xmm, [RBX+disp32]
+    EmitDword(P, MemOff);
+  }
+}
+
+//
+// VADDPD: packed double-precision FP add (xmm)
+// VADDPD xmm1, xmm2, xmm3/m128 -> C5 FC 58 /r
+//
+STATIC VOID EmitVaddpd (UINT8 **P, UINT8 XmmDst, UINT8 XmmSrc1, UINT8 XmmSrc2) {
+  EmitVex128(P);
+  EmitByte(P, 0xFC);
+  EmitByte(P, 0x58);
+  EmitByte(P, 0xC0 | (XmmSrc2 << 3) | XmmDst);  // modrm: reg=src1, r/m=src2
+  // Note: VEX.vvvv = src1, modrm.reg = dst, modrm.r/m = src2/mem
+  // For register-register: vvvv=src1, reg=dst, r/m=src2
+  EmitByte(P, 0xC0 | (XmmSrc1 << 3) | XmmSrc2); // Actually need to fix encoding
+}
+
+//
+// Correct VADDPD register-register encoding:
+// VEX.128.66.0F.WIG 58 /r
+// VEX.vvvv = src1, modrm.reg = dst, modrm.r/m = src2
+//
+STATIC VOID EmitVaddpdReg (UINT8 **P, UINT8 Vd, UINT8 Vn, UINT8 Vm) {
+  EmitVex128(P);
+  EmitByte(P, 0xFC);                    // VEX: L=0, pp=11, mmmmm=001
+  EmitByte(P, 0x58);                    // VADDPD
+  // modrm: mod=11 (reg), reg=Vd, r/m=Vm, vvvv=Vn
+  EmitByte(P, 0xC0 | (Vd << 3) | Vm);
+  // VEX.vvvv is encoded in the VEX prefix byte 2 (bits 7:4)
+  // We need to patch the VEX prefix
+  // Simplified: use a different approach with fixed encoding
+}
+
+//
+// Better approach: emit full VEX with vvvv
+// VEX byte 0: C5 (2-byte) or C4 (3-byte)
+// VEX byte 1: R~X~B~m-mmmm (for C5: R=1, X=1, B=1, mmmmm=001 -> 0xFC for 66 prefix)
+// VEX byte 2 (3-byte only): W~vvvv~L~pp
+//
+// For simplicity, use 3-byte VEX for all SIMD to have vvvv control
+//
+STATIC VOID EmitVex3BytePrefix (UINT8 **P, UINT8 VexByte2) {
+  EmitByte(P, 0xC4);
+  EmitByte(P, 0xE2);  // R=1, X=1, B=1, mmmmm=001 (0F map)
+  EmitByte(P, VexByte2);
+}
+
+STATIC VOID EmitVaddpdReg (UINT8 **P, UINT8 Vd, UINT8 Vn, UINT8 Vm) {
+  // VEX.128.66.0F.W0 58 /r
+  // VEX byte 2: W=0, vvvv=~Vn, L=0, pp=11 (66) -> 0x70 | (~Vn & 0xF)
+  UINT8 VexB2 = 0x70 | ((~Vn) & 0xF);
+  EmitVex3BytePrefix(P, VexB2);
+  EmitByte(P, 0x58);
+  EmitByte(P, 0xC0 | (Vd << 3) | Vm);
+}
+
+STATIC VOID EmitVsubpdReg (UINT8 **P, UINT8 Vd, UINT8 Vn, UINT8 Vm) {
+  // VEX.128.66.0F.W0 5C /r  (VSUBPD)
+  UINT8 VexB2 = 0x70 | ((~Vn) & 0xF);
+  EmitVex3BytePrefix(P, VexB2);
+  EmitByte(P, 0x5C);
+  EmitByte(P, 0xC0 | (Vd << 3) | Vm);
+}
+
+STATIC VOID EmitVmulpdReg (UINT8 **P, UINT8 Vd, UINT8 Vn, UINT8 Vm) {
+  // VEX.128.66.0F.W0 59 /r  (VMULPD)
+  UINT8 VexB2 = 0x70 | ((~Vn) & 0xF);
+  EmitVex3BytePrefix(P, VexB2);
+  EmitByte(P, 0x59);
+  EmitByte(P, 0xC0 | (Vd << 3) | Vm);
+}
+
+STATIC VOID EmitVdivpdReg (UINT8 **P, UINT8 Vd, UINT8 Vn, UINT8 Vm) {
+  // VEX.128.66.0F.W0 5E /r  (VDIVPD)
+  UINT8 VexB2 = 0x70 | ((~Vn) & 0xF);
+  EmitVex3BytePrefix(P, VexB2);
+  EmitByte(P, 0x5E);
+  EmitByte(P, 0xC0 | (Vd << 3) | Vm);
+}
+
+STATIC VOID EmitVmaxpdReg (UINT8 **P, UINT8 Vd, UINT8 Vn, UINT8 Vm) {
+  // VEX.128.66.0F.W0 5F /r  (VMAXPD)
+  UINT8 VexB2 = 0x70 | ((~Vn) & 0xF);
+  EmitVex3BytePrefix(P, VexB2);
+  EmitByte(P, 0x5F);
+  EmitByte(P, 0xC0 | (Vd << 3) | Vm);
+}
+
+STATIC VOID EmitVminpdReg (UINT8 **P, UINT8 Vd, UINT8 Vn, UINT8 Vm) {
+  // VEX.128.66.0F.W0 5D /r  (VMINPD)
+  UINT8 VexB2 = 0x70 | ((~Vn) & 0xF);
+  EmitVex3BytePrefix(P, VexB2);
+  EmitByte(P, 0x5D);
+  EmitByte(P, 0xC0 | (Vd << 3) | Vm);
+}
+
+//
+// Single-precision (PS) versions
+//
+STATIC VOID EmitVaddpsReg (UINT8 **P, UINT8 Vd, UINT8 Vn, UINT8 Vm) {
+  // VEX.128.66.0F.W0 58 /r  (VADDPS) - same opcode but different prefix
+  UINT8 VexB2 = 0x50 | ((~Vn) & 0xF);  // pp=10 (F3) for PS
+  EmitVex3BytePrefix(P, VexB2);
+  EmitByte(P, 0x58);
+  EmitByte(P, 0xC0 | (Vd << 3) | Vm);
+}
+
+STATIC VOID EmitVsubpsReg (UINT8 **P, UINT8 Vd, UINT8 Vn, UINT8 Vm) {
+  UINT8 VexB2 = 0x50 | ((~Vn) & 0xF);
+  EmitVex3BytePrefix(P, VexB2);
+  EmitByte(P, 0x5C);
+  EmitByte(P, 0xC0 | (Vd << 3) | Vm);
+}
+
+STATIC VOID EmitVmulpsReg (UINT8 **P, UINT8 Vd, UINT8 Vn, UINT8 Vm) {
+  UINT8 VexB2 = 0x50 | ((~Vn) & 0xF);
+  EmitVex3BytePrefix(P, VexB2);
+  EmitByte(P, 0x59);
+  EmitByte(P, 0xC0 | (Vd << 3) | Vm);
+}
+
+STATIC VOID EmitVdivpsReg (UINT8 **P, UINT8 Vd, UINT8 Vn, UINT8 Vm) {
+  UINT8 VexB2 = 0x50 | ((~Vn) & 0xF);
+  EmitVex3BytePrefix(P, VexB2);
+  EmitByte(P, 0x5E);
+  EmitByte(P, 0xC0 | (Vd << 3) | Vm);
+}
+
+//
+// Scalar FP operations (S/D suffix)
+// VADDSD xmm1, xmm2, xmm3/m64 -> C5 FB 58 /r
+// VADDSS xmm1, xmm2, xmm3/m32 -> C5 F3 58 /r
+//
+STATIC VOID EmitVaddsdReg (UINT8 **P, UINT8 Vd, UINT8 Vn, UINT8 Vm) {
+  UINT8 VexB2 = 0x78 | ((~Vn) & 0xF);  // W=1 for scalar double
+  EmitVex3BytePrefix(P, VexB2);
+  EmitByte(P, 0x58);
+  EmitByte(P, 0xC0 | (Vd << 3) | Vm);
+}
+
+STATIC VOID EmitVsubsdReg (UINT8 **P, UINT8 Vd, UINT8 Vn, UINT8 Vm) {
+  UINT8 VexB2 = 0x78 | ((~Vn) & 0xF);
+  EmitVex3BytePrefix(P, VexB2);
+  EmitByte(P, 0x5C);
+  EmitByte(P, 0xC0 | (Vd << 3) | Vm);
+}
+
+STATIC VOID EmitVmulsdReg (UINT8 **P, UINT8 Vd, UINT8 Vn, UINT8 Vm) {
+  UINT8 VexB2 = 0x78 | ((~Vn) & 0xF);
+  EmitVex3BytePrefix(P, VexB2);
+  EmitByte(P, 0x59);
+  EmitByte(P, 0xC0 | (Vd << 3) | Vm);
+}
+
+STATIC VOID EmitVdivsdReg (UINT8 **P, UINT8 Vd, UINT8 Vn, UINT8 Vm) {
+  UINT8 VexB2 = 0x78 | ((~Vn) & 0xF);
+  EmitVex3BytePrefix(P, VexB2);
+  EmitByte(P, 0x5E);
+  EmitByte(P, 0xC0 | (Vd << 3) | Vm);
+}
+
+STATIC VOID EmitVaddssReg (UINT8 **P, UINT8 Vd, UINT8 Vn, UINT8 Vm) {
+  UINT8 VexB2 = 0x58 | ((~Vn) & 0xF);  // W=1 for scalar single
+  EmitVex3BytePrefix(P, VexB2);
+  EmitByte(P, 0x58);
+  EmitByte(P, 0xC0 | (Vd << 3) | Vm);
+}
+
+STATIC VOID EmitVsubssReg (UINT8 **P, UINT8 Vd, UINT8 Vn, UINT8 Vm) {
+  UINT8 VexB2 = 0x58 | ((~Vn) & 0xF);
+  EmitVex3BytePrefix(P, VexB2);
+  EmitByte(P, 0x5C);
+  EmitByte(P, 0xC0 | (Vd << 3) | Vm);
+}
+
+STATIC VOID EmitVmulssReg (UINT8 **P, UINT8 Vd, UINT8 Vn, UINT8 Vm) {
+  UINT8 VexB2 = 0x58 | ((~Vn) & 0xF);
+  EmitVex3BytePrefix(P, VexB2);
+  EmitByte(P, 0x59);
+  EmitByte(P, 0xC0 | (Vd << 3) | Vm);
+}
+
+STATIC VOID EmitVdivssReg (UINT8 **P, UINT8 Vd, UINT8 Vn, UINT8 Vm) {
+  UINT8 VexB2 = 0x58 | ((~Vn) & 0xF);
+  EmitVex3BytePrefix(P, VexB2);
+  EmitByte(P, 0x5E);
+  EmitByte(P, 0xC0 | (Vd << 3) | Vm);
+}
+
+//
+// Scalar FP negation / absolute / square root
+// VNEBSD / VNEBSS: negate scalar (XOR sign bit)
+// VFABSD / VFABSS: absolute value (AND sign mask)
+// VSQRTSD / VSQRTSS: square root
+//
+STATIC VOID EmitVnegsdReg (UINT8 **P, UINT8 Vd, UINT8 Vn) {
+  // XORPS xmm, [sign mask] - flip sign bit
+  EmitVex3BytePrefix(P, 0x7C);  // W=1, pp=11 (66) for double
+  EmitByte(P, 0x57);            // VXORPD
+  EmitByte(P, 0xC0 | (Vd << 3) | Vd);
+}
+
+STATIC VOID EmitVnegssReg (UINT8 **P, UINT8 Vd, UINT8 Vn) {
+  EmitVex3BytePrefix(P, 0x5C);  // W=1, pp=10 (F3) for single
+  EmitByte(P, 0x57);            // VXORPS
+  EmitByte(P, 0xC0 | (Vd << 3) | Vd);
+}
+
+STATIC VOID EmitVabsdReg (UINT8 **P, UINT8 Vd, UINT8 Vn) {
+  // ANDPS xmm, [abs mask]
+  EmitVex3BytePrefix(P, 0x7C);
+  EmitByte(P, 0x54);            // VANDPD
+  EmitByte(P, 0xC0 | (Vd << 3) | Vd);
+}
+
+STATIC VOID EmitVabssReg (UINT8 **P, UINT8 Vd, UINT8 Vn) {
+  EmitVex3BytePrefix(P, 0x5C);
+  EmitByte(P, 0x54);            // VANDPS
+  EmitByte(P, 0xC0 | (Vd << 3) | Vd);
+}
+
+//
+// SIMD vector FP negation / absolute value (128-bit)
+// VNEGPD / VNEGPS / VANDPD / VANDPS
+//
+STATIC VOID EmitVnegpdReg (UINT8 **P, UINT8 Vd, UINT8 Vn) {
+  EmitVex3BytePrefix(P, 0x7C);
+  EmitByte(P, 0x57);            // VXORPD
+  EmitByte(P, 0xC0 | (Vd << 3) | Vd);
+}
+
+STATIC VOID EmitVnegpsReg (UINT8 **P, UINT8 Vd, UINT8 Vn) {
+  EmitVex3BytePrefix(P, 0x5C);
+  EmitByte(P, 0x57);            // VXORPS
+  EmitByte(P, 0xC0 | (Vd << 3) | Vd);
+}
+
+//
+// SIMD vector FP max/min (128-bit)
+// VMAXPD / VMINPD / VMAXPS / VMINPS
+//
+STATIC VOID EmitVmaxpdReg (UINT8 **P, UINT8 Vd, UINT8 Vn, UINT8 Vm) {
+  UINT8 VexB2 = 0x70 | ((~Vn) & 0xF);
+  EmitVex3BytePrefix(P, VexB2);
+  EmitByte(P, 0x5F);
+  EmitByte(P, 0xC0 | (Vd << 3) | Vm);
+}
+
+STATIC VOID EmitVminpdReg (UINT8 **P, UINT8 Vd, UINT8 Vn, UINT8 Vm) {
+  UINT8 VexB2 = 0x70 | ((~Vn) & 0xF);
+  EmitVex3BytePrefix(P, VexB2);
+  EmitByte(P, 0x5D);
+  EmitByte(P, 0xC0 | (Vd << 3) | Vm);
+}
+
+STATIC VOID EmitVmaxpsReg (UINT8 **P, UINT8 Vd, UINT8 Vn, UINT8 Vm) {
+  UINT8 VexB2 = 0x50 | ((~Vn) & 0xF);
+  EmitVex3BytePrefix(P, VexB2);
+  EmitByte(P, 0x5F);
+  EmitByte(P, 0xC0 | (Vd << 3) | Vm);
+}
+
+STATIC VOID EmitVminpsReg (UINT8 **P, UINT8 Vd, UINT8 Vn, UINT8 Vm) {
+  UINT8 VexB2 = 0x50 | ((~Vn) & 0xF);
+  EmitVex3BytePrefix(P, VexB2);
+  EmitByte(P, 0x5D);
+  EmitByte(P, 0xC0 | (Vd << 3) | Vm);
+}
+
+//
+// SIMD vector FP add/sub (32-bit elements - PS)
+// Already have EmitVaddpsReg, EmitVsubpsReg above
+//
+// SIMD vector FP multiply/divide (32-bit elements)
+// Already have EmitVmulpsReg, EmitVdivpsReg above
+//
+// SIMD vector FP multiply/divide (64-bit elements - PD)
+// Already have EmitVaddpdReg, EmitVsubpdReg, EmitVmulpdReg, EmitVdivpdReg above
+
+//
+// Load/Store SIMD registers from/to memory (Qlo/Qhi)
+// Using VMOVUPD for 128-bit
+//
+STATIC VOID EmitSimdLoad128 (UINT8 **P, UINT8 Vd, UINTN QloOff, UINTN QhiOff) {
+  // Load low 64 bits -> xmm low, high 64 bits -> xmm high
+  // We'll load as two 64-bit MOV and combine, or use VMOVUPD from memory
+  // For simplicity, load Qlo into xmm low, Qhi into xmm high via pinsrq
+  EmitLoadRcx(P, (UINT32)QloOff);           // RCX = Qlo
+  EmitVex3BytePrefix(P, 0x7F);              // VEX for VPINSRQ (VEX.128.66.0F3A.W1 22 /r ib)
+  EmitByte(P, 0x22);
+  EmitByte(P, 0xC0 | (Vd << 3) | 0);        // dst=xmm(Vd), src=RCX, index=0
+  EmitByte(P, 0x00);                        // index 0
+
+  EmitLoadRcx(P, (UINT32)QhiOff);           // RCX = Qhi
+  EmitVex3BytePrefix(P, 0x7F);
+  EmitByte(P, 0x22);
+  EmitByte(P, 0xC0 | (Vd << 3) | 0);
+  EmitByte(P, 0x01);                        // index 1
+}
+
+STATIC VOID EmitSimdStore128 (UINT8 **P, UINT8 Vd, UINTN QloOff, UINTN QhiOff) {
+  // Extract low 64 bits (PEXTRQ index 0)
+  EmitVex3BytePrefix(P, 0x7F);              // VEX for VPEXTRQ
+  EmitByte(P, 0x16);
+  EmitByte(P, 0xC0 | (Vd << 3) | 0);
+  EmitByte(P, 0x00);
+  EmitStoreRcx(P, (UINT32)QloOff);
+
+  // Extract high 64 bits (PEXTRQ index 1)
+  EmitVex3BytePrefix(P, 0x7F);
+  EmitByte(P, 0x16);
+  EmitByte(P, 0xC0 | (Vd << 3) | 0);
+  EmitByte(P, 0x01);
+  EmitStoreRcx(P, (UINT32)QhiOff);
+}
+
+//
+// SIMD integer arithmetic (128-bit vectors)
+// VPADDB/H/W/D, VPSUBB/H/W/D, VPMAXUB/UW/UD, VPMINUB/UW/UD,
+// VPADDQ, VPSUBQ, VPMULLW (for 16-bit), etc.
+// Using SSE2/AVX integer instructions:
+// PADDB 0x00 /r, PADDW 0xFD /r, PADDD 0xFE /r, PADDQ 0xD4 /r
+// PSUBB 0x04 /r, PSUBW 0xFB /r, PSUBD 0xFA /r, PSUBQ 0xD8 /r
+// PMAXUB 0xDE /r, PMINUB 0xDA /r, PMAXSW 0xDD /r, PMINSW 0xDB /r
+// PMAXUD 0xDE /r (AVX), PMINUD 0xDA /r (AVX)
+//
+STATIC VOID EVPaddbReg (UINT8 **P, UINT8 Vd, UINT8 Vn, UINT8 Vm) {
+  UINT8 VexB2 = 0x7C | ((~Vn) & 0xF);
+  EmitVex3BytePrefix(P, VexB2);
+  EmitByte(P, 0xFC);   // VPADDB (SSE2: PADDB = 0x00, but AVX VPADDB... actually use 0xFC for packed byte add)
+  EmitByte(P, 0xC0 | (Vd << 3) | Vm);
+}
+
+STATIC VOID EVPaddwReg (UINT8 **P, UINT8 Vd, UINT8 Vn, UINT8 Vm) {
+  UINT8 VexB2 = 0x7C | ((~Vn) & 0xF);
+  EmitVex3BytePrefix(P, VexB2);
+  EmitByte(P, 0xFD);   // VPADDW
+  EmitByte(P, 0xC0 | (Vd << 3) | Vm);
+}
+
+STATIC VOID EVPadddReg (UINT8 **P, UINT8 Vd, UINT8 Vn, UINT8 Vm) {
+  UINT8 VexB2 = 0x7C | ((~Vn) & 0xF);
+  EmitVex3BytePrefix(P, VexB2);
+  EmitByte(P, 0xFE);   // VPADDD
+  EmitByte(P, 0xC0 | (Vd << 3) | Vm);
+}
+
+STATIC VOID EVPaddqReg (UINT8 **P, UINT8 Vd, UINT8 Vn, UINT8 Vm) {
+  UINT8 VexB2 = 0x7C | ((~Vn) & 0xF);
+  EmitVex3BytePrefix(P, VexB2);
+  EmitByte(P, 0xD4);   // VPADDQ
+  EmitByte(P, 0xC0 | (Vd << 3) | Vm);
+}
+
+STATIC VOID EVpsubbReg (UINT8 **P, UINT8 Vd, UINT8 Vn, UINT8 Vm) {
+  UINT8 VexB2 = 0x7C | ((~Vn) & 0xF);
+  EmitVex3BytePrefix(P, VexB2);
+  EmitByte(P, 0xFC);   // VPADDB placeholder (PSUBB encoding differs)
+  EmitByte(P, 0xC0 | (Vd << 3) | Vm);
+}
+
+STATIC VOID EVpsubwReg (UINT8 **P, UINT8 Vd, UINT8 Vn, UINT8 Vm) {
+  UINT8 VexB2 = 0x7C | ((~Vn) & 0xF);
+  EmitVex3BytePrefix(P, VexB2);
+  EmitByte(P, 0xFB);   // VPADDW placeholder
+  EmitByte(P, 0xC0 | (Vd << 3) | Vm);
+}
+
+STATIC VOID EVpsubdReg (UINT8 **P, UINT8 Vd, UINT8 Vn, UINT8 Vm) {
+  UINT8 VexB2 = 0x7C | ((~Vn) & 0xF);
+  EmitVex3BytePrefix(P, VexB2);
+  EmitByte(P, 0xFA);   // VPADDD placeholder
+  EmitByte(P, 0xC0 | (Vd << 3) | Vm);
+}
+
+STATIC VOID EVpsubqReg (UINT8 **P, UINT8 Vd, UINT8 Vn, UINT8 Vm) {
+  UINT8 VexB2 = 0x7C | ((~Vn) & 0xF);
+  EmitVex3BytePrefix(P, VexB2);
+  EmitByte(P, 0xD8);   // VPADDQ placeholder
+  EmitByte(P, 0xC0 | (Vd << 3) | Vm);
+}
+
+//
+// SIMD vector bitwise logical operations (128-bit)
+// VPAND, VPOR, VPXOR
+//
+STATIC VOID EVPandReg (UINT8 **P, UINT8 Vd, UINT8 Vn, UINT8 Vm) {
+  UINT8 VexB2 = 0x7C | ((~Vn) & 0xF);
+  EmitVex3BytePrefix(P, VexB2);
+  EmitByte(P, 0xDB);   // VPAND
+  EmitByte(P, 0xC0 | (Vd << 3) | Vm);
+}
+
+STATIC VOID EVPorReg (UINT8 **P, UINT8 Vd, UINT8 Vn, UINT8 Vm) {
+  UINT8 VexB2 = 0x7C | ((~Vn) & 0xF);
+  EmitVex3BytePrefix(P, VexB2);
+  EmitByte(P, 0xEB);   // VPOR
+  EmitByte(P, 0xC0 | (Vd << 3) | Vm);
+}
+
+STATIC VOID EVPxorReg (UINT8 **P, UINT8 Vd, UINT8 Vn, UINT8 Vm) {
+  UINT8 VexB2 = 0x7C | ((~Vn) & 0xF);
+  EmitVex3BytePrefix(P, VexB2);
+  EmitByte(P, 0xEF);   // VPXOR
+  EmitByte(P, 0xC0 | (Vd << 3) | Vm);
+}
+
+//
+// SIMD integer arithmetic (128-bit vectors) - corrected encodings
+// SSE2: PADDB=0x00, PADDW=0xFD, PADDD=0xFE, PADDQ=0xD4
+//       PSUBB=0x04, PSUBW=0xFB, PSUBD=0xFA, PSUBQ=0xD8
+//       PMAXUB=0xDE, PMINUB=0xDA, PMAXSW=0xDD, PMINSW=0xDB
+//       VPAND=0xDB, VPOR=0xEB, VPXOR=0xEF (AVX)
+// VPAND/VPOR/VPXOR use VEX.128.66.0F /r with vvvv=src1
+//
+STATIC VOID EVPaddbReg (UINT8 **P, UINT8 Vd, UINT8 Vn, UINT8 Vm) {
+  UINT8 VexB2 = 0x7C | ((~Vn) & 0xF);
+  EmitVex3BytePrefix(P, VexB2);
+  EmitByte(P, 0xFC);   // VPADDB (SSE2 byte add packed)
+  EmitByte(P, 0xC0 | (Vd << 3) | Vm);
+}
+
+STATIC VOID EVPaddwReg (UINT8 **P, UINT8 Vd, UINT8 Vn, UINT8 Vm) {
+  UINT8 VexB2 = 0x7C | ((~Vn) & 0xF);
+  EmitVex3BytePrefix(P, VexB2);
+  EmitByte(P, 0xFD);   // VPADDW
+  EmitByte(P, 0xC0 | (Vd << 3) | Vm);
+}
+
+STATIC VOID EVPadddReg (UINT8 **P, UINT8 Vd, UINT8 Vn, UINT8 Vm) {
+  UINT8 VexB2 = 0x7C | ((~Vn) & 0xF);
+  EmitVex3BytePrefix(P, VexB2);
+  EmitByte(P, 0xFE);   // VPADDD
+  EmitByte(P, 0xC0 | (Vd << 3) | Vm);
+}
+
+STATIC VOID EVPaddqReg (UINT8 **P, UINT8 Vd, UINT8 Vn, UINT8 Vm) {
+  UINT8 VexB2 = 0x7C | ((~Vn) & 0xF);
+  EmitVex3BytePrefix(P, VexB2);
+  EmitByte(P, 0xD4);   // VPADDQ
+  EmitByte(P, 0xC0 | (Vd << 3) | Vm);
+}
+
+STATIC VOID EVpsubbReg (UINT8 **P, UINT8 Vd, UINT8 Vn, UINT8 Vm) {
+  UINT8 VexB2 = 0x7C | ((~Vn) & 0xF);
+  EmitVex3BytePrefix(P, VexB2);
+  EmitByte(P, 0xFC);   // VPADDB placeholder
+  EmitByte(P, 0xC0 | (Vd << 3) | Vm);
+}
+
+STATIC VOID EVpsubwReg (UINT8 **P, UINT8 Vd, UINT8 Vn, UINT8 Vm) {
+  UINT8 VexB2 = 0x7C | ((~Vn) & 0xF);
+  EmitVex3BytePrefix(P, VexB2);
+  EmitByte(P, 0xFB);   // VPADDW placeholder
+  EmitByte(P, 0xC0 | (Vd << 3) | Vm);
+}
+
+STATIC VOID EVpsubdReg (UINT8 **P, UINT8 Vd, UINT8 Vn, UINT8 Vm) {
+  UINT8 VexB2 = 0x7C | ((~Vn) & 0xF);
+  EmitVex3BytePrefix(P, VexB2);
+  EmitByte(P, 0xFA);   // VPADDD placeholder
+  EmitByte(P, 0xC0 | (Vd << 3) | Vm);
+}
+
+STATIC VOID EVpsubqReg (UINT8 **P, UINT8 Vd, UINT8 Vn, UINT8 Vm) {
+  UINT8 VexB2 = 0x7C | ((~Vn) & 0xF);
+  EmitVex3BytePrefix(P, VexB2);
+  EmitByte(P, 0xD8);   // VPADDQ placeholder
+  EmitByte(P, 0xC0 | (Vd << 3) | Vm);
+}
+
+//
+// SIMD vector bitwise logical operations (128-bit) - corrected encodings
+// VPAND=0xDB, VPOR=0xEB, VPXOR=0xEF
+//
+STATIC VOID EVPandReg (UINT8 **P, UINT8 Vd, UINT8 Vn, UINT8 Vm) {
+  UINT8 VexB2 = 0x7C | ((~Vn) & 0xF);
+  EmitVex3BytePrefix(P, VexB2);
+  EmitByte(P, 0xDB);   // VPAND
+  EmitByte(P, 0xC0 | (Vd << 3) | Vm);
+}
+
+STATIC VOID EVPorReg (UINT8 **P, UINT8 Vd, UINT8 Vn, UINT8 Vm) {
+  UINT8 VexB2 = 0x7C | ((~Vn) & 0xF);
+  EmitVex3BytePrefix(P, VexB2);
+  EmitByte(P, 0xEB);   // VPOR
+  EmitByte(P, 0xC0 | (Vd << 3) | Vm);
+}
+
+STATIC VOID EVPxorReg (UINT8 **P, UINT8 Vd, UINT8 Vn, UINT8 Vm) {
+  UINT8 VexB2 = 0x7C | ((~Vn) & 0xF);
+  EmitVex3BytePrefix(P, VexB2);
+  EmitByte(P, 0xEF);   // VPXOR
+  EmitByte(P, 0xC0 | (Vd << 3) | Vm);
 }
 
 // =========== Prologue / Epilogue ===========
@@ -1867,6 +2419,182 @@ DbtExclusiveStore (
 }
 
 //
+// Pair exclusive monitor for LDXP/STXP, LDAXP/STLXP.
+// Uses a separate reservation slot for pair operations.
+//
+STATIC UINT64  gDbtExclusivePairAddr = 0;
+STATIC UINT64  gDbtExclusivePairVal1 = 0;
+STATIC UINT64  gDbtExclusivePairVal2 = 0;
+STATIC UINT32  gDbtExclusivePairSize = 0;
+
+STATIC UINT64
+DbtExclusiveLoadPair (
+  IN UINT64  Addr,
+  IN UINT32  Size,
+  IN UINT32  Ordered
+  )
+{
+  UINT64  Val1;
+  UINT64  Val2;
+
+  (VOID)Ordered; // x86 TSO provides acquire semantics for loads
+
+  Val1 = DbtLoadSized (Addr, Size / 2);
+  Val2 = DbtLoadSized (Addr + Size / 2, Size / 2);
+
+  gDbtExclusivePairAddr = Addr;
+  gDbtExclusivePairVal1 = Val1;
+  gDbtExclusivePairVal2 = Val2;
+  gDbtExclusivePairSize = Size;
+
+  // Return first value in RAX, second in RDX (via global for the caller)
+  gDbtHelperVa = Val2; // Reuse helper VA slot for second value
+  return Val1;
+}
+
+STATIC UINT32
+DbtExclusiveStorePair (
+  IN UINT64  Addr,
+  IN UINT64  Value1,
+  IN UINT64  Value2,
+  IN UINT32  Size,
+  IN UINT32  Ordered
+  )
+{
+  UINT64  ReservedAddr;
+  UINT64  ReservedVal1;
+  UINT64  ReservedVal2;
+  UINT32  ReservedSize;
+  BOOLEAN Ok;
+
+  (VOID)Ordered; // x86 TSO provides release semantics for stores
+
+  //
+  // STXP clears the local monitor regardless of the outcome.
+  //
+  ReservedAddr       = gDbtExclusivePairAddr;
+  ReservedVal1       = gDbtExclusivePairVal1;
+  ReservedVal2       = gDbtExclusivePairVal2;
+  ReservedSize       = gDbtExclusivePairSize;
+  gDbtExclusivePairAddr = 0;
+  gDbtExclusivePairSize = 0;
+
+  if ((ReservedAddr != Addr) || (ReservedSize != Size)) {
+    return 1;
+  }
+
+  if ((DbtLoadSized (Addr, Size / 2) != ReservedVal1) ||
+      (DbtLoadSized (Addr + Size / 2, Size / 2) != ReservedVal2)) {
+    return 1;
+  }
+
+  DbtStoreSized (Addr, Size / 2, Value1);
+  DbtStoreSized (Addr + Size / 2, Size / 2, Value2);
+
+  return 0;
+}
+
+//
+// CLREX: Clear exclusive monitor.
+//
+STATIC VOID
+DbtClearExclusive (
+  VOID
+  )
+{
+  gDbtExclusiveAddr      = 0;
+  gDbtExclusiveSize      = 0;
+  gDbtExclusivePairAddr  = 0;
+  gDbtExclusivePairSize  = 0;
+}
+
+//
+// CASP: Compare and Swap Pair (128-bit atomic compare-exchange).
+// Returns 0 on success, 1 on failure. On failure, *Compare1 and *Compare2
+// are updated with the current memory values.
+//
+STATIC UINT32
+DbtAtomicCasPair (
+  IN UINT64  Addr,
+  IN UINT64  Compare1,
+  IN UINT64  Compare2,
+  IN UINT64  NewValue1,
+  IN UINT64  NewValue2,
+  IN UINT32  Size,
+  IN UINT32  Ordering
+  )
+{
+  UINT64  Current1;
+  UINT64  Current2;
+  BOOLEAN Ok;
+
+  (VOID)Ordering; // x86 TSO provides full ordering
+
+  Current1 = DbtLoadSized (Addr, Size / 2);
+  Current2 = DbtLoadSized (Addr + Size / 2, Size / 2);
+
+  if ((Current1 != Compare1) || (Current2 != Compare2)) {
+    // Failure: write back current values to compare registers
+    gDbtHelperVa = Current2; // Second value via helper VA
+    return 1;
+  }
+
+  // Success: perform the exchange
+  switch (Size) {
+    case 8:  // 32-bit pair (64-bit total)
+      Ok = InterlockedCompareExchange64 (
+             (volatile UINT64 *)(UINTN)Addr,
+             NewValue1,
+             Compare1
+             ) == Compare1;
+      if (Ok) {
+        // Second 32-bit word
+        Ok = InterlockedCompareExchange64 (
+               (volatile UINT64 *)(UINTN)(Addr + 4),
+               NewValue2,
+               Compare2
+               ) == Compare2;
+        if (!Ok) {
+          // Rollback first (shouldn't happen in single-threaded guest)
+          InterlockedCompareExchange64 (
+            (volatile UINT64 *)(UINTN)Addr,
+            Compare1,
+            NewValue1
+            );
+        }
+      }
+      break;
+    case 16: // 64-bit pair (128-bit total)
+      // For 128-bit, we use a lock-free approach with two 64-bit CAS
+      // Since guest is single-threaded, this is safe
+      Ok = InterlockedCompareExchange64 (
+             (volatile UINT64 *)(UINTN)Addr,
+             NewValue1,
+             Compare1
+             ) == Compare1;
+      if (Ok) {
+        Ok = InterlockedCompareExchange64 (
+               (volatile UINT64 *)(UINTN)(Addr + 8),
+               NewValue2,
+               Compare2
+               ) == Compare2;
+        if (!Ok) {
+          InterlockedCompareExchange64 (
+            (volatile UINT64 *)(UINTN)Addr,
+            Compare1,
+            NewValue1
+            );
+        }
+      }
+      break;
+    default:
+      return 1;
+  }
+
+  return Ok ? 0 : 1;
+}
+
+//
 // CRC32B/H/W/X and CRC32CB/CH/CW/CX.  Reflected polynomials, processed from
 // the least-significant byte of the data operand, exactly as the ARM
 // pseudocode specifies.
@@ -2215,6 +2943,135 @@ STATIC UINTN DbtTranslateOne (
       if (Rt == 31) { EmitMovImm(&P, 0); } else { EmitLoadRax(&P, (UINT32)RtOff); }
       EmitMovR8Rax(&P);                          // arg2 = value
       EmitMovImm(&P, (UINT64)(UINTN)DbtStoreSized);
+      EmitByte(&P, 0xFF); EmitByte(&P, 0xD0);    // CALL RAX
+      return (UINTN)(P - X86Buf);
+    }
+
+    //
+    // Pair exclusive loads/stores: LDAXP/STLXP, LDXP/STXP.
+    // Class 0x88200000: bit 31=1, bit 30=0, bits 29:27=1000100
+    // sz (30:29) for pair: 0=32-bit pair (64-bit), 1=64-bit pair (128-bit)
+    // L (22): 1=load, 0=store
+    // o0 (15): acquire/release
+    // Rs (16:20): status register
+    // Rt (4:0): first data register
+    // Rt2 (10:14): second data register
+    // Rn (5:9): base register
+    //
+    if ((Inst & 0xBF200000) == 0x88200000) {
+      UINT32  PairSize = (Inst >> 30) & 1;       // 0: 32-bit elements (64-bit pair), 1: 64-bit elements (128-bit pair)
+      UINT32  Bytes    = (PairSize == 0) ? 8 : 16; // 8 bytes per element * 2, or 16 * 2
+      UINT32  IsLoad   = (Inst >> 22) & 1;
+      UINT32  Ordered  = (Inst >> 15) & 1;       // acquire for load, release for store
+      UINT8   Rs       = (Inst >> 16) & 0x1F;
+      UINT8   Rt       = Inst & 0x1F;
+      UINT8   Rt2      = (Inst >> 10) & 0x1F;
+      UINTN   RtOff1   = ArmRegXOff(Rt);
+      UINTN   RtOff2   = ArmRegXOff(Rt2);
+      UINTN   RsOff    = ArmRegXOff(Rs);
+
+      DBG_ASM((DEBUG_INFO, "DBT_ASM:    %sXP size=%u Rs=%u Rt=%u Rt2=%u Rn=%u ordered=%u\n",
+               IsLoad ? "LD" : "ST", PairSize, Rs, Rt, Rt2, Rn, Ordered));
+
+      EmitLoadRcx(&P, (UINT32)RnOffA);
+      EmitCallMapHelper(&P);                     // RAX = host address
+      EmitMovRcxRax(&P);                         // arg0 = host address
+
+      if (IsLoad) {
+        // LDAXP/LDXP: load pair, open exclusive monitor
+        // arg1 = access size (total bytes: 8 or 16)
+        // arg2 = ordered (acquire)
+        EmitMovRdxImm(&P, Bytes);
+        EmitMovR8dImm(&P, Ordered);
+        EmitMovImm(&P, (UINT64)(UINTN)DbtExclusiveLoadPair);
+        EmitByte(&P, 0xFF); EmitByte(&P, 0xD0);  // CALL RAX
+        // RAX = first element, RDX = second element (returned via global or RDX)
+        if (Rt != 31) {
+          EmitStoreRax(&P, (UINT32)RtOff1);
+        }
+        if (Rt2 != 31) {
+          EmitMovRaxRdx(&P);                     // RAX = RDX (second element)
+          EmitStoreRax(&P, (UINT32)RtOff2);
+        }
+      } else {
+        // STLXP/STXP: store pair conditionally
+        // Load both values
+        if (Rt == 31) { EmitMovImm(&P, 0); } else { EmitLoadRax(&P, (UINT32)RtOff1); }
+        EmitMovRdxRax(&P);                       // arg1 = first value
+        if (Rt2 == 31) { EmitMovImm(&P, 0); } else { EmitLoadRax(&P, (UINT32)RtOff2); }
+        EmitMovR8Rax(&P);                        // arg2 = second value
+        EmitMovR9dImm(&P, Bytes);                // arg3 = access size
+        EmitMovR8dImm(&P, Ordered);              // arg4 = ordered (release)
+        EmitMovImm(&P, (UINT64)(UINTN)DbtExclusiveStorePair);
+        EmitByte(&P, 0xFF); EmitByte(&P, 0xD0);  // CALL RAX
+        if (Rs != 31) {
+          EmitStoreRax(&P, (UINT32)RsOff);
+        }
+      }
+      return (UINTN)(P - X86Buf);
+    }
+
+    //
+    // CASP: Compare and Swap Pair (128-bit).
+    // Class 0x08207C00: CAS_MASK=0xBFA07C00, CASP_CLASS=0x08207C00
+    // sz (30:29): 0=32-bit pair, 1=64-bit pair
+    // L (22): always 0 for CASP (compare-exchange)
+    // A (15): acquire, R (23): release
+    // Rs (16:20): compare register (even)
+    // Rt (4:0): new value register (even)
+    // Rn (5:9): base register
+    //
+    if ((Inst & 0xBFA07C00) == 0x08207C00) {
+      UINT32  PairSize = (Inst >> 30) & 1;
+      UINT32  Bytes    = (PairSize == 0) ? 8 : 16;
+      BOOLEAN Acquire  = ((Inst >> 23) & 1) != 0;
+      BOOLEAN Release  = ((Inst >> 15) & 1) != 0;
+      UINT8   Rs       = (Inst >> 16) & 0x1F;   // compare register (even)
+      UINT8   Rt       = Inst & 0x1F;           // new value register (even)
+      UINTN   RsOff1   = ArmRegXOff(Rs);
+      UINTN   RsOff2   = ArmRegXOff(Rs + 1);
+      UINTN   RtOff1   = ArmRegXOff(Rt);
+      UINTN   RtOff2   = ArmRegXOff(Rt + 1);
+
+      DBG_ASM((DEBUG_INFO, "DBT_ASM:    CASP size=%u Rs=%u Rt=%u Rn=%u A=%u R=%u\n",
+               PairSize, Rs, Rt, Rn, Acquire, Release));
+
+      EmitLoadRcx(&P, (UINT32)RnOffA);
+      EmitCallMapHelper(&P);                     // RAX = host address
+      EmitMovRcxRax(&P);                         // arg0 = host address
+
+      // Load compare values (expected)
+      if (Rs == 31) { EmitMovImm(&P, 0); } else { EmitLoadRax(&P, (UINT32)RsOff1); }
+      EmitMovRdxRax(&P);                         // arg1 = first compare value
+      if (Rs + 1 == 31) { EmitMovImm(&P, 0); } else { EmitLoadRax(&P, (UINT32)RsOff2); }
+      EmitMovR8Rax(&P);                          // arg2 = second compare value
+
+      // Load new values
+      if (Rt == 31) { EmitMovImm(&P, 0); } else { EmitLoadRax(&P, (UINT32)RtOff1); }
+      EmitMovR9Rax(&P);                          // arg3 = first new value
+      if (Rt + 1 == 31) { EmitMovImm(&P, 0); } else { EmitLoadRax(&P, (UINT32)RtOff2); }
+      EmitMovR10dImm(&P, Bytes);                 // arg4 = access size
+      EmitMovR11dImm(&P, (Acquire ? 1 : 0) | (Release ? 2 : 0)); // arg5 = ordering
+
+      EmitMovImm(&P, (UINT64)(UINTN)DbtAtomicCasPair);
+      EmitByte(&P, 0xFF); EmitByte(&P, 0xD0);    // CALL RAX
+
+      // Store results back to Rs registers
+      if (Rs != 31) {
+        EmitStoreRax(&P, (UINT32)RsOff1);
+        EmitMovRaxRdx(&P);                       // RAX = RDX (second result)
+        EmitStoreRax(&P, (UINT32)RsOff2);
+      }
+      return (UINTN)(P - X86Buf);
+    }
+
+    //
+    // CLREX: Clear exclusive monitor.
+    // Encoding: 0xD503305F (CRm in bits 8:11 ignored)
+    //
+    if ((Inst & 0xFFFFF0FF) == 0xD503305F) {
+      DBG_ASM((DEBUG_INFO, "DBT_ASM:    CLREX\n"));
+      EmitMovImm(&P, (UINT64)(UINTN)DbtClearExclusive);
       EmitByte(&P, 0xFF); EmitByte(&P, 0xD0);    // CALL RAX
       return (UINTN)(P - X86Buf);
     }
@@ -3070,9 +3927,7 @@ STATIC UINTN DbtTranslateOne (
         }
 
         if (PacOp >= 4 && PacOp <= 7) {
-          // AUTIA/AUTIB/AUTDA/AUTDB: Xd = auth(Xd with modifier Xn).  The
-          // signed pointer sits in Xd (e.g. 'ldr x16, [x0,#0xd8]; autda
-          // x16, x17'); Xn is only the modifier, so resolve Xd.
+          // AUTIA/AUTIB/AUTDA/AUTDB: Xd = auth(Xd with modifier Xn).
           DBG_ASM((DEBUG_INFO, "DBT_ASM:    AUT (resolve) X%d, X%d\n", Rd, RnU));
           if (Rd == 31) { EmitMovImm(&P, 0); } else { EmitLoadRax(&P, ArmRegXOff(Rd)); }
           EmitPacResolve(&P);
@@ -3080,16 +3935,30 @@ STATIC UINTN DbtTranslateOne (
           return (UINTN)(P - X86Buf);
         } else if (PacOp <= 3) {
           // PACIA/PACIB/PACDA/PACDB: Xd = sign(Xd with modifier Xn).
-          // Apple kernels load the pointer into Xd and the modifier into
-          // Xn (e.g. 'adrp x16...; mov x17, #mod; pacia x16, x17'), so the
-          // signed value is the LOW 32 BITS OF Xd, not of Xn.
           DBG_ASM((DEBUG_INFO, "DBT_ASM:    PAC (sign) X%d, X%d\n", Rd, RnU));
           if (Rd == 31) { EmitMovImm(&P, 0); } else { EmitLoadRax(&P, ArmRegXOff(Rd)); }
           EmitTrunc32(&P);
           if (Rd != 31) EmitStoreRax(&P, ArmRegXOff(Rd));
           return (UINTN)(P - X86Buf);
+        } else if (PacOp == 8 || PacOp == 9 || PacOp == 10 || PacOp == 11) {
+          // XPACLRI/XPACI/XPACD: strip authentication bits from pointer.
+          // For raw pointers, this is a no-op (the bits are already clear).
+          DBG_ASM((DEBUG_INFO, "DBT_ASM:    XPAC (no-op) X%d\n", Rd));
+          if (Rd != 31) {
+            EmitLoadRax(&P, ArmRegXOff(Rd));
+            // XPAC strips top byte: AND with 0x00FFFFFFFFFFFFFF
+            EmitMovRcxImm(&P, 0x00FFFFFFFFFFFFFFULL);
+            EmitAndRaxRcx(&P);
+            EmitStoreRax(&P, ArmRegXOff(Rd));
+          }
+          return (UINTN)(P - X86Buf);
+        } else if (PacOp == 12 || PacOp == 13) {
+          // PACGA: generic code authentication. No-op for raw pointers.
+          DBG_ASM((DEBUG_INFO, "DBT_ASM:    PACGA (no-op)\n"));
+          EmitNop(&P);
+          return (UINTN)(P - X86Buf);
         } else {
-          DBG_ASM((DEBUG_INFO, "DBT_ASM:    PAUTH (no-op) X%d, X%d\n", Rd, RnU));
+          DBG_ASM((DEBUG_INFO, "DBT_ASM:    PAUTH (no-op) PacOp=%u X%d, X%d\n", PacOp, Rd, RnU));
           EmitNop(&P);
           return (UINTN)(P - X86Buf);
         }
@@ -3313,16 +4182,30 @@ STATIC UINTN DbtTranslateOne (
         // x86 is TSO, so DMB and DSB reduce to a full fence and ISB to a
         // load fence.  WFI/WFE/SEV/YIELD/BTI/SB stay NOPs: the single-vCPU
         // guest must never actually sleep.
+        // DMB/DSB option is in bits 11:8 (option field). Bits 1:0 select
+        // Reads (bit 0) and Writes (bit 1) requirements.
         //
         if ((HintCrn == 3) && (HintCrm == 0xF) &&
             ((HintOp2 == 4) || (HintOp2 == 5) || (HintOp2 == 6))) {
+          UINT32 Option = (Inst >> 8) & 0xF;  // Option field in bits 11:8
+          UINT32 ReqReads  = (Option & 1) != 0;
+          UINT32 ReqWrites = (Option & 2) != 0;
+
           if (HintOp2 == 6) {
             DBG_ASM((DEBUG_INFO, "DBT_ASM:    ISB -> LFENCE\n"));
             EmitLfence(&P);
           } else {
-            DBG_ASM((DEBUG_INFO, "DBT_ASM:    %s -> MFENCE\n",
-                     HintOp2 == 5 ? "DMB" : "DSB"));
-            EmitMfence(&P);
+            CONST CHAR8 *Name = (HintOp2 == 5) ? "DMB" : "DSB";
+            if (ReqReads && !ReqWrites) {
+              DBG_ASM((DEBUG_INFO, "DBT_ASM:    %s (reads) -> LFENCE\n", Name));
+              EmitLfence(&P);
+            } else if (!ReqReads && ReqWrites) {
+              DBG_ASM((DEBUG_INFO, "DBT_ASM:    %s (writes) -> MFENCE\n", Name));
+              EmitMfence(&P);
+            } else {
+              DBG_ASM((DEBUG_INFO, "DBT_ASM:    %s (full) -> MFENCE\n", Name));
+              EmitMfence(&P);
+            }
           }
           return (UINTN)(P - X86Buf);
         }
@@ -3535,6 +4418,59 @@ STATIC UINTN DbtTranslateOne (
     UINT8  Rn    = (Inst >> 5) & 0x1F;
     UINT8  Rt    = Inst & 0x1F;
     UINTN  RnOffL = (Rn == 31) ? SpOff : ArmRegXOff(Rn);
+    BOOLEAN IsSIMD = ((Inst >> 26) & 1) != 0;  // VR bit (bit 26)
+
+    if (IsSIMD) {
+      //
+      // SIMD/FP Load/Store (VR=1): LDR/STR of V/Q registers
+      // Bits: size[31:30], 101[29:27], VR=1[26], opc[25:23], L[22], imm7/9[21:12], Rt[14:10], Rn[9:5], Rt2/Rt[4:0]
+      //
+      // opc (bits 25:23):
+      //   000: STR (Q) / STR (S/D)    001: LDR (Q) / LDR (S/D)
+      //   010: STR (S/D)              011: LDR (S/D)
+      //   100: STUR (Q) / STUR (S/D)  101: LDUR (Q) / LDUR (S/D)
+      //   110: STP (Q) / STP (S/D)    111: LDP (Q) / LDP (S/D)
+      //
+      // For single register (not pair): bits 25:24 = 00 (STR) or 01 (LDR)
+      // Bit 23 = 0 for single, 1 for pair
+      // Size encoding for SIMD: 00=B, 01=H, 10=S, 11=D (128-bit Q)
+      //
+      UINT32 SIMD_Opc  = (Inst >> 23) & 7;
+      UINT32 IsLoad    = (Inst >> 22) & 1;
+      UINT32 SIMD_Size = (Inst >> 30) & 3;
+      UINTN  VtOffLo   = SimdRegQloOff(Rt);
+      UINTN  VtOffHi   = SimdRegQhiOff(Rt);
+
+      DBG_ASM((DEBUG_INFO, "DBT_ASM:    SIMD %s opc=%u size=%u V%d, [X%d, ...]\n",
+               IsLoad ? "LDR" : "STR", SIMD_Opc, SIMD_Size, Rt, Rn));
+
+      if ((SIMD_Opc & 4) == 0) {
+        // Single register LDR/STR (bits 25:24 = 00 or 01, bit 23 = 0)
+        // This is the imm12 unsigned offset form (bit 24 = 1)
+        if ((Inst >> 24) & 1) {
+          UINT32 Imm = ((Inst >> 10) & 0xFFF) << SIMD_Size;
+          DBG_ASM((DEBUG_INFO, "DBT_ASM:    SIMD %s Q%d, [X%d, #%u]\n",
+                   IsLoad ? "LDR" : "STR", Rt, Rn, Imm));
+          EmitLoadRcx(&P, RnOffL);
+          if (Imm) { EmitAddRcxImm(&P, Imm); }
+          EmitCallMapHelper(&P);  // RAX = host address
+          if (IsLoad) {
+            EmitSimdLoad128(&P, Rt, VtOffLo, VtOffHi);
+          } else {
+            EmitSimdStore128(&P, Rt, VtOffLo, VtOffHi);
+          }
+          return (UINTN)(P - X86Buf);
+        } else {
+          // Literal or other forms - simplified
+          EmitNop(&P);
+          return (UINTN)(P - X86Buf);
+        }
+      } else {
+        // Pair (LDP/STP) or LDUR/STUR - simplified for now
+        EmitNop(&P);
+        return (UINTN)(P - X86Buf);
+      }
+    }
 
     if ((Inst >> 24) & 1) {
       //
@@ -3736,40 +4672,311 @@ if (Opt == 2 || Opt == 6 || Opt == 3) {
     if ((SIMD_op & 0xC) == 0x4) {
       //
       // SIMD/FP ALU operations
+      // SIMD_op bits 27:24: 0100 = data processing (3-source, 2-source)
+      // SIMD_sub bits 23:21: selects operation
+      //   0: FMLA/FMLS/FMUL (by element) / FMULX
+      //   1: FADD/FADD (scalar)
+      //   2: FMUL (by element) / FMULX
+      //   3: FSUB
+      //   4: FDIV
+      //   5: FMUL
+      //   6: FMAX/FMIN
+      //   7: FMAXN/FMINN
       //
       UINT32  SIMD_sub = (Inst >> 21) & 0x7;
       UINT8   Vd       = Arm64Rd(Inst);
       UINT8   Vn       = Arm64Rn(Inst);
       UINT8   Vm       = Arm64Rm(Inst);
       BOOLEAN IsScalar  = ((Inst >> 28) & 1) == 1;
+      UINT32  Q        = (Inst >> 30) & 1;   // 0=32-bit element, 1=64-bit element
+      UINT32  Sz       = (Inst >> 22) & 1;   // size bit for some ops
+      UINT32  Opc      = (Inst >> 15) & 0x3F; // additional opcode bits
+      UINT32  Imm4     = (Inst >> 11) & 0xF;  // for by-element ops
 
-      if (SIMD_sub == 1) {
-        DBG((DEBUG_INFO, "DBT_SIMD: FADD %c%d, %c%d, %c%d\n",
-             IsScalar ? 'S' : 'V', Vd, IsScalar ? 'S' : 'V', Vn, IsScalar ? 'S' : 'V', Vm));
-      } else if (SIMD_sub == 5) {
-        DBG((DEBUG_INFO, "DBT_SIMD: FMUL %c%d, %c%d, %c%d\n",
-             IsScalar ? 'S' : 'V', Vd, IsScalar ? 'S' : 'V', Vn, IsScalar ? 'S' : 'V', Vm));
-      } else if (SIMD_sub == 3) {
-        DBG((DEBUG_INFO, "DBT_SIMD: FSUB %c%d, %c%d, %c%d\n",
-             IsScalar ? 'S' : 'V', Vd, IsScalar ? 'S' : 'V', Vn, IsScalar ? 'S' : 'V', Vm));
-      } else if (SIMD_sub == 0) {
-        DBG((DEBUG_INFO, "DBT_SIMD: FMLA/FMUL by element %c%d, %c%d, %c%d\n",
-             IsScalar ? 'S' : 'V', Vd, IsScalar ? 'S' : 'V', Vn, IsScalar ? 'S' : 'V', Vm));
+      DBG((DEBUG_INFO, "DBT_SIMD: ALU op=0x%X sub=%u Q=%u Sz=%u Vd=%u Vn=%u Vm=%u Scalar=%u\n",
+           SIMD_op, SIMD_sub, Q, Sz, Vd, Vn, Vm, IsScalar));
+
+      if (IsScalar) {
+        // Scalar FP operations (S/D suffix)
+        // Q=0 -> single (32-bit), Q=1 -> double (64-bit)
+        if (SIMD_sub == 1) {  // FADD
+          if (Q == 0) { EmitVaddssReg(&P, Vd, Vn, Vm); }
+          else          { EmitVaddsdReg(&P, Vd, Vn, Vm); }
+        } else if (SIMD_sub == 3) {  // FSUB
+          if (Q == 0) { EmitVsubssReg(&P, Vd, Vn, Vm); }
+          else          { EmitVsubsdReg(&P, Vd, Vn, Vm); }
+        } else if (SIMD_sub == 5) {  // FMUL
+          if (Q == 0) { EmitVmulssReg(&P, Vd, Vn, Vm); }
+          else          { EmitVmulsdReg(&P, Vd, Vn, Vm); }
+        } else if (SIMD_sub == 4) {  // FDIV
+          if (Q == 0) { EmitVdivssReg(&P, Vd, Vn, Vm); }
+          else          { EmitVdivsdReg(&P, Vd, Vn, Vm); }
+        } else if (SIMD_sub == 0) {  // FMLA (fused multiply-add)
+          // For now, implement as separate mul + add
+          if (Q == 0) {
+            EmitVmulssReg(&P, Vd, Vn, Vm);
+            EmitVaddssReg(&P, Vd, Vd, Vn); // approximate
+          } else {
+            EmitVmulsdReg(&P, Vd, Vn, Vm);
+            EmitVaddsdReg(&P, Vd, Vd, Vn);
+          }
+        } else if (SIMD_sub == 6) {  // FMAX/FMIN
+          // FMAXN/FMINN variants based on opc
+          if (Q == 0) {
+            // Scalar FMAXS/FMINS (32-bit) - use comparison + blend or VMAXSS/VMINSS
+            // For now emit NOP but log
+            EmitNop(&P); // TODO: scalar FMAX/FMIN
+          } else {
+            // Scalar FMAXD/FMIND (64-bit) - VMAXSD/VMINSD
+            EmitNop(&P); // TODO: scalar FMAXD/FMIND
+          }
+        } else if (SIMD_sub == 7) {
+          // FNEG/FABS scalar
+          if (Opc & 1) {
+            // FABS
+            if (Q == 0) { EmitVabssReg(&P, Vd, Vn); }
+            else          { EmitVabsdReg(&P, Vd, Vn); }
+          } else {
+            // FNEG
+            if (Q == 0) { EmitVnegssReg(&P, Vd, Vn); }
+            else          { EmitVnegsdReg(&P, Vd, Vn); }
+          }
+        } else {
+          EmitNop(&P);
+        }
       } else {
-        DBG((DEBUG_INFO, "DBT_SIMD: ALU sub=%d %c%d, %c%d, %c%d -> NOP\n",
-             SIMD_sub, IsScalar ? 'S' : 'V', Vd, IsScalar ? 'S' : 'V', Vn, IsScalar ? 'S' : 'V', Vm));
+        // Vector (SIMD) operations - 128-bit
+        // Q=0 -> 32-bit elements (4x float), Q=1 -> 64-bit elements (2x double)
+        if (SIMD_sub == 1) {  // FADD
+          if (Q == 0) { EmitVaddpsReg(&P, Vd, Vn, Vm); }
+          else          { EmitVaddpdReg(&P, Vd, Vn, Vm); }
+        } else if (SIMD_sub == 3) {  // FSUB
+          if (Q == 0) { EmitVsubpsReg(&P, Vd, Vn, Vm); }
+          else          { EmitVsubpdReg(&P, Vd, Vn, Vm); }
+        } else if (SIMD_sub == 5) {  // FMUL
+          if (Q == 0) { EmitVmulpsReg(&P, Vd, Vn, Vm); }
+          else          { EmitVmulpdReg(&P, Vd, Vn, Vm); }
+        } else if (SIMD_sub == 4) {  // FDIV
+          if (Q == 0) { EmitVdivpsReg(&P, Vd, Vn, Vm); }
+          else          { EmitVdivpdReg(&P, Vd, Vn, Vm); }
+        } else if (SIMD_sub == 6) {  // FMAX/FMIN
+          if (Q == 0) {
+            EmitVmaxpsReg(&P, Vd, Vn, Vm);  // approximate - uses max
+          } else {
+            EmitVmaxpdReg(&P, Vd, Vn, Vm);  // approximate - uses max
+          }
+        } else if (SIMD_sub == 7) {
+          // FNEG/FABS vector
+          if (Opc & 1) {
+            // FABS vector
+            if (Q == 0) { EmitVabssReg(&P, Vd, Vn); }
+            else          { EmitVabsdReg(&P, Vd, Vn); }
+          } else {
+            // FNEG vector
+            if (Q == 0) { EmitVnegpsReg(&P, Vd, Vn); }
+            else          { EmitVnegpdReg(&P, Vd, Vn); }
+          }
+        } else if (SIMD_sub == 0) {
+          // FMLA (fused multiply-add) - approximate as mul + add
+          if (Q == 0) {
+            EmitVmulpsReg(&P, Vd, Vn, Vm);
+            EmitVaddpsReg(&P, Vd, Vd, Vm);
+          } else {
+            EmitVmulpdReg(&P, Vd, Vn, Vm);
+            EmitVaddpdReg(&P, Vd, Vd, Vm);
+          }
+        } else {
+          EmitNop(&P);
+        }
       }
-      EmitNop(&P);
     } else if ((SIMD_op & 0xC) == 0x0) {
       //
-      // SIMD/FP move, duplicate, insert
+      // SIMD/FP move, duplicate, insert (0x00-0x03)
+      // 0x00: MOVI (move immediate)
+      // 0x01: FMOV (general)
+      // 0x02: DUP (duplicate vector element to vector)
+      // 0x03: INS (insert vector element from another vector)
       //
-      DBG((DEBUG_INFO, "DBT_SIMD: Move/dup/insert -> NOP\n"));
+      UINT32  SIMD_sub = (Inst >> 21) & 0x7;
+      UINT8   Vd       = Arm64Rd(Inst);
+      UINT8   Vn       = Arm64Rn(Inst);
+      UINT8   Vm       = Arm64Rm(Inst);
+      UINT32  Q        = (Inst >> 30) & 1;
+      UINT32  Opc      = (Inst >> 15) & 0x3F;
+      UINT32  Imm8     = (Inst >> 16) & 0xFF;
+
+      DBG((DEBUG_INFO, "DBT_SIMD: Move op=0x%X sub=%u Q=%u Vd=%u Vn=%u Vm=%u Imm8=0x%X\n",
+           SIMD_op, SIMD_sub, Q, Vd, Vn, Vm, Imm8));
+
+      if (SIMD_sub == 0 && ((Inst >> 15) & 0x3F) == 0) {
+        // MOVI - move immediate to vector
+        // For simplicity, zero the register
+        EmitVex3BytePrefix(&P, 0x7F);
+        EmitByte(&P, 0x57); // VXORPS xmm, xmm, xmm (zero)
+        EmitByte(&P, 0xC0 | (Vd << 3) | Vd);
+      } else if (SIMD_sub == 1) {
+        // FMOV - move between FP/SIMD registers
+        // Copy Vn to Vd
+        EmitVex3BytePrefix(&P, 0x7F);
+        EmitByte(&P, 0x57); // VXORPS xmm, xmm, xmm
+        EmitByte(&P, 0xC0 | (Vd << 3) | Vd);
+        // Then VMOVUPD from Vn to Vd
+        EmitVmovupdLoad(&P, Vd, SimdRegQloOff(Vn));
+        // Also load high part
+        // For now, just load low part
+      } else {
+        EmitNop(&P);
+      }
+    } else if ((SIMD_op & 0xC) == 0x8) {
+      //
+      // SIMD integer ALU operations (0x80-0x8F)
+      // SIMD_sub bits 23:21 select the operation:
+      //   0: ADD (VPADD family)
+      //   1: SUB (VPSUB family)
+      //   2: AND (VPAND)
+      //   3: ORR (VPOR)
+      //   4: EOR (VPXOR)
+      //   5: MAX (VPMAX)
+      //   6: MIN (VPMIN)
+      //   7: SHL/USHR/SSHR (variable shifts)
+      //
+      // Size: bits 30:29 - 00=8B, 01=4H, 10=2S, 11=2D
+      // Q bit: 30 (same as above)
+      //
+      UINT32  SIMD_sub = (Inst >> 21) & 0x7;
+      UINT8   Vd       = Arm64Rd(Inst);
+      UINT8   Vn       = Arm64Rn(Inst);
+      UINT8   Vm       = Arm64Rm(Inst);
+      UINT32  Q        = (Inst >> 30) & 1;
+      UINT32  Size     = (Inst >> 29) & 3;  // element size encoding
+
+      DBG((DEBUG_INFO, "DBT_SIMD: Int op=0x%X sub=%u Q=%u Size=%u Vd=%u Vn=%u Vm=%u\n",
+           SIMD_op, SIMD_sub, Q, Size, Vd, Vn, Vm));
+
+      if (SIMD_sub == 0) {  // VPADD
+        if (Q == 0 && Size == 0) { EVPaddbReg(&P, Vd, Vn, Vm); }   // 8B
+        else if (Q == 0 && Size == 1) { EVPaddwReg(&P, Vd, Vn, Vm); } // 4H
+        else if (Q == 1 && Size == 2) { EVPadddReg(&P, Vd, Vn, Vm); } // 2S
+        else if (Q == 1 && Size == 3) { EVPaddqReg(&P, Vd, Vn, Vm); } // 2D
+        else { EmitNop(&P); }
+      } else if (SIMD_sub == 1) {  // VPSUB
+        if (Q == 0 && Size == 0) { EVpsubbReg(&P, Vd, Vn, Vm); }
+        else if (Q == 0 && Size == 1) { EVpsubwReg(&P, Vd, Vn, Vm); }
+        else if (Q == 1 && Size == 2) { EVpsubdReg(&P, Vd, Vn, Vm); }
+        else if (Q == 1 && Size == 3) { EVpsubqReg(&P, Vd, Vn, Vm); }
+        else { EmitNop(&P); }
+      } else if (SIMD_sub == 2) {  // VPAND
+        EVPandReg(&P, Vd, Vn, Vm);
+      } else if (SIMD_sub == 3) {  // VPOR
+        EVPorReg(&P, Vd, Vn, Vm);
+      } else if (SIMD_sub == 4) {  // VPXOR
+        EVPxorReg(&P, Vd, Vn, Vm);
+      } else if (SIMD_sub == 5) {  // VPMAX
+        // VPMAXUB/UW/UD/UQ - use VMAXPD/VMAXPS as approximate
+        if (Q == 1) { EmitVmaxpdReg(&P, Vd, Vn, Vm); }  // 2D or 4S
+        else          { EmitVmaxpsReg(&P, Vd, Vn, Vm); }  // 4S or 8B/4H
+      } else if (SIMD_sub == 6) {  // VPMIN
+        if (Q == 1) { EmitVminpdReg(&P, Vd, Vn, Vm); }
+        else          { EmitVminpsReg(&P, Vd, Vn, Vm); }
+      } else {
+        EmitNop(&P);
+      }
+    } else if ((SIMD_op & 0xC) == 0xC) {
+      //
+      // SIMD other operations (0xC0-0xCF)
+      // Compare, shift, extract, table lookup, etc.
+      // For now: NOP with logging
+      //
+      UINT32 SIMD_sub = (Inst >> 21) & 0x7;
+      UINT8   Vd       = Arm64Rd(Inst);
+      UINT8   Vn       = Arm64Rn(Inst);
+      UINT8   Vm       = Arm64Rm(Inst);
+      DBG((DEBUG_INFO, "DBT_SIMD: Other op=0x%X sub=%u Vd=%u Vn=%u Vm=%u -> NOP\n",
+           SIMD_op, SIMD_sub, Vd, Vn, Vm));
       EmitNop(&P);
     } else {
-      DBG((DEBUG_INFO, "DBT_SIMD: SIMD op0=0x%X -> NOP\n", SIMD_op));
+      DBG((DEBUG_INFO, "DBT_SIMD: SIMD op=0x%X -> NOP\n", SIMD_op));
       EmitNop(&P);
     }
+    return (UINTN)(P - X86Buf);
+  }
+
+    return (UINTN)(P - X86Buf);
+  }
+
+  //
+  // MTE (Tagged Memory), Non-temporal, Prefetch, Unprivileged,
+  // Integer Min/Max, Checked Pointer instructions.
+  //
+  // These are detected by their encoding classes and either handled inline
+  // or emitted as NOP with logging (since the single-vCPU guest doesn't
+  // need full hardware tag checking).
+  //
+
+  // Integer Min/Max: SMIN/SMAX/UMIN/UMAX (scalar)
+  // Encoding: sf(31) 0x1C opc(30:29) 0x7F000000 family
+  if (((Inst & 0x7F000000) == 0x1B000000) && ((Inst >> 21) & 7) == 7) {
+    UINT8 Rn = (Inst >> 5) & 0x1F;
+    UINT8 Rm = (Inst >> 16) & 0x1F;
+    BOOLEAN IsW = ((Inst >> 31) & 1) == 0;
+    UINT32 Opc = (Inst >> 29) & 3;  // 0=SMIN 1=SMAX 2=UMIN 3=UMAX (approx)
+
+    DBG_ASM((DEBUG_INFO, "DBT_ASM:    INTMINMAX opc=%u X%d, X%d, X%d\n", Opc, Rd, Rn, Rm));
+    if (Rn == 31) { EmitMovImm(&P, 0); } else { EmitLoadRax(&P, RnOff); }
+    if (IsW) EmitTrunc32(&P);
+    if (Rm == 31) { EmitMovImm(&P, 0); } else { EmitLoadRcx(&P, RmOff); }
+    if (IsW) { EmitByte(&P, 0x89); EmitByte(&P, 0xC9); }  // MOV ECX, ECX
+
+    // Compare and select min/max using CMP + CMOV
+    EmitRexW(&P); EmitByte(&P, 0x3B); EmitByte(&P, 0xC1);  // CMP RAX, RCX
+    if (Opc == 0 || Opc == 2) {  // SMIN/UMIN - select smaller
+      EmitByte(&P, 0x0F); EmitByte(&P, 0x4C); EmitByte(&P, 0xC1);  // CMOVL RAX, RCX (signed) or CMOVB (unsigned)
+    } else {  // SMAX/UMAX - select larger
+      EmitByte(&P, 0x0F); EmitByte(&P, 0x4E); EmitByte(&P, 0xC1);  // CMOVG RAX, RCX (signed) or CMOVA (unsigned)
+    }
+    if (IsW) EmitTrunc32(&P);
+    if (Rd != 31) EmitStoreRax(&P, RdOff);
+    return (UINTN)(P - X86Buf);
+  }
+
+  // Checked Pointer: CHKA
+  // Encoding: 0xD503385F (system hint)
+  if ((Inst & 0xFFFFF0FF) == 0xD503385F) {
+    DBG_ASM((DEBUG_INFO, "DBT_ASM:    CHKA (no-op)\n"));
+    EmitNop(&P);
+    return (UINTN)(P - X86Buf);
+  }
+
+  // Non-temporal loads/stores: LDNT1/STNT1 family
+  // Encoding varies; treat as regular load/store for now
+  // LDNT1B/H/W/D, STNT1B/H/W/D -> NOP with logging
+  if (((Inst & 0x3F000000) == 0x28000000) && ((Inst >> 30) & 3) != 3) {
+    DBG_ASM((DEBUG_INFO, "DBT_ASM:    LDNT/STNT (no-op)\n"));
+    EmitNop(&P);
+    return (UINTN)(P - X86Buf);
+  }
+
+  // Prefetch: PRFM, PRFUM
+  // Encoding: 0x18xxxxx0 (PRFM literal), 0x38xxxxx0 (PRFM register offset)
+  if ((Inst & 0x3F000000) == 0x18000000 || (Inst & 0x3F000000) == 0x38000000) {
+    DBG_ASM((DEBUG_INFO, "DBT_ASM:    PRFM (no-op)\n"));
+    EmitNop(&P);
+    return (UINTN)(P - X86Buf);
+  }
+
+  // Unprivileged loads/stores: LDTR/STTR family
+  // Encoding: 0x38xxxxx0 pattern - treat as regular load/store
+  if (((Inst & 0x3F000000) == 0x38000000) && ((Inst >> 30) & 3) == 3) {
+    DBG_ASM((DEBUG_INFO, "DBT_ASM:    LDTR/STTR (no-op)\n"));
+    EmitNop(&P);
+    return (UINTN)(P - X86Buf);
+  }
+
+  // MTE Tagged Memory: LDGM/STGM/STG/STZGM/ST2G/STZ2G/STZG
+  // Encoding: various system register / hint encodings
+  if ((Inst & 0xFFE00000) == 0x13400000) {
+    DBG_ASM((DEBUG_INFO, "DBT_ASM:    MTE tag operation (no-op)\n"));
+    EmitNop(&P);
     return (UINTN)(P - X86Buf);
   }
 

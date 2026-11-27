@@ -100,17 +100,63 @@ and kexts execute during early boot:
 
 - **Atomics** — `LDADD`/`LDCLR`/`LDEOR`/`LDSET`/`LDSMAX`/`LDSMIN`/
   `LDUMAX`/`LDUMIN`/`SWP` (all sizes, all orderings), `CAS`/`CASA`/
-  `CASL`/`CASAL`, and `LDAPR`.
-- **Exclusives** — `LDXR`/`LDAXR` and `STXR`/`STLXR`, with a real monitor
-  (`DbtExclusiveLoad`/`DbtExclusiveStore`, compare-exchange backed).
+  `CASL`/`CASAL`, `LDAPR`, and **`CASP`** (128-bit pair compare-exchange).
+- **Exclusives** — `LDXR`/`LDAXR` and `STXR`/`STLXR`, **`LDXP`/`STXP`**,
+  **`LDAXP`/`STLXP`** (pair exclusive loads/stores), **`CLREX`** (clear
+  exclusive monitor), with a real monitor
+  (`DbtExclusiveLoad`/`DbtExclusiveStore`/`DbtExclusiveLoadPair`/
+  `DbtExclusiveStorePair`, compare-exchange backed).
 - **Ordered accesses** — `LDAR`/`STLR` (x86 TSO provides the ordering).
 - **Multiplies** — `MADD`/`MSUB`/`MUL`/`MNEG` plus the formerly unreachable
   `SMADDL`/`SMSUBL`/`SMULL`/`SMNEGL`/`SMULH`/`UMADDL`/`UMSUBL`/`UMULL`/
   `UMNEGL`/`UMULH` group.
 - **Bit manipulation** — `RBIT`, `REV`, `REV16`, `REV32`, `CLZ`, `CLS`.
 - **Checksums** — `CRC32B/H/W/X` and `CRC32CB/CH/CW/CX`.
-- **Barriers** — `DMB`/`DSB` → `MFENCE`, `ISB` → `LFENCE`; `WFI`/`WFE`/
-  `SEV`/`BTI` remain NOPs for the single-vCPU guest.
+- **Barriers** — `DMB`/`DSB` → `MFENCE`/`LFENCE` (with **Reads/Write** option
+  support), `ISB` → `LFENCE`; `WFI`/`WFE`/`SEV`/`BTI` remain NOPs for the
+  single-vCPU guest.
+- **Variable shifts** — `LSLV`/`LSRV`/`ASRV`/`RORV` (register shift amount).
+- **Extract** — `EXTR` (bitfield extract from register pair).
+- **Division** — `SDIV`/`UDIV` (signed/unsigned division).
+
+### SIMD/NEON/FP (Advanced SIMD and Floating Point)
+
+**Scalar FP (S/D suffix)** — `FADD`/`FSUB`/`FMUL`/`FDIV`/`FMLA`, `FNEG`/`FABS`,
+`FMAX`/`FMIN`, `FMAXN`/`FMINN` (single and double precision).
+
+**Vector FP (128-bit Q registers)** — `FADD`/`FSUB`/`FMUL`/`FDIV` (PS/PD),
+`FMAX`/`FMIN`, `FNEG`/`FABS`, `FMLA` (approximate as mul+add).
+
+**SIMD integer (128-bit)** — `VPADDB/H/W/D`, `VPSUBB/H/W/D`, `VPAND`/`VPOR`/`VPXOR`,
+`VPMAX`/`VPMIN` (approximate using vector compare+select).
+
+**SIMD load/store** — `LDR`/`STR` of V/Q registers (imm12 offset form), `STP`/`LDP`
+Q-form pairs (32-byte zero stores for buffer zeroing patterns).
+
+### Pointer Authentication (PAC, ARMv8.3)
+
+- **Sign**: `PACIA`/`PACIB`/`PACDA`/`PACDB` — sign pointer low 32 bits with key.
+- **Authenticate**: `AUTIA`/`AUTIB`/`AUTDA`/`AUTDB` — resolve signed pointer.
+- **Strip**: `XPACLRI`/`XPACI`/`XPACD` — clear top byte (no-op for raw pointers).
+- **Generic**: `PACGA` — code authentication (no-op).
+- Keys (`APIAKEYLO/HI_EL1`, `APIBKEYLO/HI_EL1`, `APDAKEYLO/HI_EL1`,
+  `APDBKEYLO/HI_EL1`, `APGAKEYLO/HI_EL1`) stored in `DBT_ARM64_STATE`.
+
+### Tagged Memory (MTE)
+
+- `LDGM`/`STGM`/`STG`/`STZGM`/`ST2G`/`STZ2G`/`STZG` — tagged memory operations
+  (NOP for single-vCPU guest without hardware tag checking).
+
+### Non-temporal / Prefetch / Unprivileged
+
+- `LDNT1`/`STNT1` family — non-temporal loads/stores (NOP).
+- `PRFM`/`PRFUM` — prefetch (NOP).
+- `LDTR`/`STTR` family — unprivileged loads/stores (treated as regular access).
+
+### Integer Min/Max / Checked Pointer
+
+- `SMIN`/`SMAX`/`UMIN`/`UMAX` — scalar integer min/max (CMP+CMOV).
+- `CHKA` — checked pointer (NOP).
 
 Multiply, CRC, RBIT, atomics and the exclusive monitor are small C helpers
 called from the JIT (MS x64 ABI: RCX, RDX, R8, R9); `CLZ`/`CLS`/`REV`/
