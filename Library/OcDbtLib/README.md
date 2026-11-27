@@ -12,6 +12,8 @@ additively with concepts ported from three projects:
    — Metal driver stack for NVIDIA GeForce on macOS Sequoia: PCI/BAR
    management, GSP firmware bring-up, HWRT ray-query scoreboards, sleep/wake,
    loop-budget instrumentation and OpenCore quirks.
+4. **Stambha** (https://github.com/eternity5515/stambha) — Stela-based fork
+   with ~1.5x faster DBT and macOS 27 support.
 
 ## Layout (additive integration)
 
