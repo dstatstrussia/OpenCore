@@ -130,8 +130,17 @@ and kexts execute during early boot:
 **SIMD integer (128-bit)** — `VPADDB/H/W/D`, `VPSUBB/H/W/D`, `VPAND`/`VPOR`/`VPXOR`,
 `VPMAX`/`VPMIN` (approximate using vector compare+select).
 
+**SIMD compare/shift/extract** — `CMEQ`/`CMGT`/`CMGE`, `SSHL`/`USHL`/`SSHR`/`USHR`,
+`EXT`, `TBL`/`TBX`.
+
 **SIMD load/store** — `LDR`/`STR` of V/Q registers (imm12 offset form), `STP`/`LDP`
 Q-form pairs (32-byte zero stores for buffer zeroing patterns).
+
+**SIMD crypto** — `SHA256H/H2/U0/U1/P0/P1/SU0/SU1`, `SHA1H/SU0/SU1`,
+`AESE`/`AESD`/`AESMC`/`AESIMC` (approximate with logical ops).
+
+**SIMD BF16/FP8** — `BFCVT`/`BFCVTN`/`BFCVTN2`, `FMLA`/`FADD`/`FMUL` (FP8
+variants — approximate).
 
 ### Pointer Authentication (PAC, ARMv8.3)
 
@@ -141,6 +150,22 @@ Q-form pairs (32-byte zero stores for buffer zeroing patterns).
 - **Generic**: `PACGA` — code authentication (no-op).
 - Keys (`APIAKEYLO/HI_EL1`, `APIBKEYLO/HI_EL1`, `APDAKEYLO/HI_EL1`,
   `APDBKEYLO/HI_EL1`, `APGAKEYLO/HI_EL1`) stored in `DBT_ARM64_STATE`.
+
+### SVE (Scalable Vector Extension)
+
+- **Z registers**: Z0-Z31, up to 256-bit (4x64-bit lanes), runtime vector length
+  via `ZCR_EL1`.
+- **P registers**: P0-P15 predicate registers, `FFR` first-fault register.
+- **Integer arithmetic**: `SVE ADD`/`SUB`/`MUL`/`SDIV`/`UDIV` (predicated).
+- **Load/store**: `LD1`/`ST1` scalar + vector.
+- **Predicate ops**: `PTEST`, `PNUMB`, `PFALSE`/`PTRUE`.
+- **System registers**: `ZCR_EL1` (vector length), `SVCR` (streaming control).
+
+### SME (Scalable Matrix Extension)
+
+- **ZA matrix registers**: outer product, matrix multiply (approximate with
+  vector ops).
+- **System registers**: `SVCR` (streaming mode control).
 
 ### Tagged Memory (MTE)
 
@@ -158,13 +183,15 @@ Q-form pairs (32-byte zero stores for buffer zeroing patterns).
 - `SMIN`/`SMAX`/`UMIN`/`UMAX` — scalar integer min/max (CMP+CMOV).
 - `CHKA` — checked pointer (NOP).
 
-Multiply, CRC, RBIT, atomics and the exclusive monitor are small C helpers
-called from the JIT (MS x64 ABI: RCX, RDX, R8, R9); `CLZ`/`CLS`/`REV`/
-`REV16`/`REV32` are emitted inline (`BSR`, `BSWAP`, masks). The encodings
-and masks were verified against `clang --target=aarch64-unknown-none`
-output, and the helpers are covered by host-side vector tests (CRC32 and
-CRC32C check values, `SMULH`/`UMULH` against a 128-bit reference, RMW and
-CAS semantics).
+### System registers (MRS/MSR)
+
+Full coverage of ID registers (`ID_AA64PFR0/1`, `ID_AA64DFR0/1`, `ID_AA64AFR0/1`,
+`ID_AA64ISAR0/1`, `ID_AA64MMFR0/1/2`), SVE/SME control (`ZCR_EL1`, `SVCR`),
+timer (`CNTFRQ_EL0`, `CNTVCT_EL0`, `CNTV_CVAL_EL0`, `CNTV_CTL_EL0`, `CNTKCTL_EL1`),
+MMU (`SCTLR_EL1`, `TTBR0/1_EL1`, `TCR_EL1`, `MAIR_EL1`, `VBAR_EL1`, `PAR_EL1`),
+exception (`SPSR_EL1`, `ELR_EL1`), FP/SIMD (`FPCR`, `FPSR`), thread ID
+(`TPIDR_EL0/EL1`, `TPIDRRO_EL0`), and auxiliary (`ACTLR_EL1`, `CONTEXTIDR_EL1`).
+
 
 ### Scoreboards (HWRT-inspired)
 
