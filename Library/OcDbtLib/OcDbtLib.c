@@ -18,6 +18,24 @@
 #define OFFSET_OF(TYPE, Field)  ((UINTN)(&((TYPE *)0)->Field))
 #endif
 
+//
+// Forward declarations for x86 code emitter helpers (defined later in file)
+//
+STATIC VOID EmitByte  (UINT8 **P, UINT8 B);
+STATIC VOID EmitDword (UINT8 **P, UINT32 V);
+STATIC VOID EmitQword (UINT8 **P, UINT64 V);
+STATIC VOID EmitRexW  (UINT8 **P);
+STATIC VOID EmitMovImm (UINT8 **P, UINT64 Val);
+STATIC VOID EmitNop   (UINT8 **P);
+STATIC VOID EmitAddImm (UINT8 **P, UINT32 Imm);
+STATIC VOID EmitAddRcxImm (UINT8 **P, UINT32 Imm);
+STATIC VOID EmitSubImm (UINT8 **P, UINT32 Imm);
+STATIC VOID EmitLoadRcx (UINT8 **P, UINT32 Off);
+STATIC VOID EmitStoreRax (UINT8 **P, UINT32 Off);
+STATIC VOID EmitStoreGlobalRcx (UINT8 **P);
+STATIC VOID EmitLoadRax (UINT8 **P, UINT32 Off);
+STATIC VOID EmitCallMapHelper (UINT8 **P);
+
 #define DBT_VERBOSE  1
 
 #if DBT_VERBOSE
@@ -231,11 +249,148 @@ VOID   DbtTraceSys     (VOID);
 // Forward declarations for emitters used by the trace code below but
 // defined in later sections.
 //
+STATIC UINTN EmitPrologue (UINT8 **P);
+STATIC UINTN EmitEpilogue (UINT8 **P);
 STATIC VOID EmitMovRcxImm (UINT8 **P, UINT64 Val);
 STATIC VOID EmitCaptureVa (UINT8 **P);
 #if DBT_DETAIL
 STATIC VOID DbtDumpState (IN CONST CHAR8 *Tag, IN DBT_ARM64_STATE *S);
 #endif
+
+//
+// Definitions of forward-declared emitters
+//
+STATIC VOID EmitMovRcxImm (UINT8 **P, UINT64 Val) {
+  EmitRexW(P); EmitByte(P, 0xB9); EmitQword(P, Val);
+}
+
+__attribute__((unused)) STATIC VOID EmitCaptureVa (UINT8 **P) {
+  EmitMovImm(P, (UINT64)(UINTN)&gDbtTraceVa);
+  EmitStoreGlobalRcx(P);
+}
+
+//
+// Prologue / Epilogue emitters
+//
+STATIC UINTN EmitPrologue (UINT8 **P) {
+  UINT8 *Start = *P;
+  // push rbp
+  EmitByte(P, 0x55);
+  // mov rbp, rsp
+  EmitRexW(P); EmitByte(P, 0x89); EmitByte(P, 0xE5);
+  // push rbx (callee-saved, will hold &ArmState)
+  EmitByte(P, 0x53);
+  // push r12-r15 (callee-saved)
+  EmitByte(P, 0x41); EmitByte(P, 0x54);  // push r12
+  EmitByte(P, 0x41); EmitByte(P, 0x55);  // push r13
+  EmitByte(P, 0x41); EmitByte(P, 0x56);  // push r14
+  EmitByte(P, 0x41); EmitByte(P, 0x57);  // push r15
+  // sub rsp, 0x100 (shadow space + alignment)
+  EmitRexW(P); EmitByte(P, 0x81); EmitByte(P, 0xEC);
+  EmitDword(P, 0x100);
+  // RBX = &Ctx->ArmState, loaded via the module global (ABI-agnostic)
+  EmitMovImm(P, (UINT64)(UINTN)&gDbtActiveState);  // mov rax, &gDbtActiveState
+  EmitRexW(P); EmitByte(P, 0x8B); EmitByte(P, 0x18);  // mov rbx, [rax]
+  // DIAGNOSTIC: write exec marker into SP_EL0 (offset 0x110)
+  EmitByte(P, 0xB8); EmitDword(P, 0xCAFEBABE);  // mov eax, marker (zero-extends)
+  EmitRexW(P); EmitByte(P, 0x89); EmitByte(P, 0x83);         // mov [rbx+disp32], eax
+  EmitDword(P, 0x110);
+  return (UINTN)(*P - Start);
+}
+
+STATIC UINTN EmitEpilogue (UINT8 **P) {
+  UINT8 *Start = *P;
+  // add rsp, 0x100
+  EmitRexW(P); EmitByte(P, 0x81); EmitByte(P, 0xC4);
+  EmitDword(P, 0x100);
+  // pop r15, r14, r13, r12
+  EmitByte(P, 0x41); EmitByte(P, 0x5F);
+  EmitByte(P, 0x41); EmitByte(P, 0x5E);
+  EmitByte(P, 0x41); EmitByte(P, 0x5D);
+  EmitByte(P, 0x41); EmitByte(P, 0x5C);
+  // pop rbx
+  EmitByte(P, 0x5B);
+  // leave (mov rsp, rbp; pop rbp)
+  EmitByte(P, 0xC9);
+  // ret
+  EmitByte(P, 0xC3);
+  return (UINTN)(*P - Start);
+}
+
+//
+// =========== x86 code emitter helpers ===========
+// RBX is permanently bound to &DBT_ARM64_STATE
+//
+STATIC VOID EmitByte  (UINT8 **P, UINT8 B)   { *((*P)++) = B; }
+STATIC VOID EmitDword (UINT8 **P, UINT32 V)  { *(UINT32 *)(*P) = V; *P += 4; }
+STATIC VOID EmitQword (UINT8 **P, UINT64 V)  { *(UINT64 *)(*P) = V; *P += 8; }
+
+// REX.W prefix
+STATIC VOID EmitRexW   (UINT8 **P) { EmitByte(P, 0x48); }
+
+// MOV [RBX+off], RAX  — store scratch reg to memory
+STATIC VOID EmitStoreRax  (UINT8 **P, UINT32 Off) {
+  EmitRexW(P); EmitByte(P, 0x89);  // MOV r/m64, r64
+  if (Off < 128) { EmitByte(P, 0x43); EmitByte(P, (UINT8)Off); }  // [RBX+disp8]
+  else { EmitByte(P, 0x83); EmitDword(P, Off); }                  // [RBX+disp32]
+}
+
+// MOV RAX, [RBX+off]  — load from memory to scratch reg
+STATIC VOID EmitLoadRax   (UINT8 **P, UINT32 Off) {
+  EmitRexW(P); EmitByte(P, 0x8B);  // MOV r64, r/m64
+  if (Off < 128) { EmitByte(P, 0x43); EmitByte(P, (UINT8)Off); }
+  else { EmitByte(P, 0x83); EmitDword(P, Off); }
+}
+
+#if 0  // reserved for future use
+STATIC VOID EmitStoreImm (UINT8 **P, UINT32 Off, UINT32 Val) {
+  EmitByte(P, 0xC7);
+  if (Off < 128) { EmitByte(P, 0x43); EmitByte(P, (UINT8)Off); }
+  else { EmitByte(P, 0x83); EmitDword(P, Off); }
+  EmitDword(P, Val);
+}
+
+STATIC VOID EmitSaveNzcv (UINT8 **P) {
+  EmitByte(P, 0x9F);
+}
+
+STATIC VOID EmitRet (UINT8 **P) { EmitByte(P, 0xC3); }
+#endif
+
+// MOV RAX, imm64
+STATIC VOID EmitMovImm   (UINT8 **P, UINT64 Val) {
+  EmitRexW(P); EmitByte(P, 0xB8); EmitQword(P, Val);
+}
+
+// NOP
+STATIC VOID EmitNop (UINT8 **P) { EmitByte(P, 0x90); }
+
+// ADD RAX, imm32
+STATIC VOID EmitAddImm (UINT8 **P, UINT32 Imm) {
+  EmitRexW(P); EmitByte(P, 0x81); EmitByte(P, 0xC0); EmitDword(P, Imm);
+}
+
+// ADD RCX, imm32
+STATIC VOID EmitAddRcxImm (UINT8 **P, UINT32 Imm) {
+  EmitRexW(P); EmitByte(P, 0x81); EmitByte(P, 0xC1); EmitDword(P, Imm);
+}
+
+// SUB RAX, imm32
+STATIC VOID EmitSubImm (UINT8 **P, UINT32 Imm) {
+  EmitRexW(P); EmitByte(P, 0x81); EmitByte(P, 0xE8); EmitDword(P, Imm);
+}
+
+// MOV RCX, [RBX+off] — load RCX from context
+STATIC VOID EmitLoadRcx (UINT8 **P, UINT32 Off) {
+  EmitRexW(P); EmitByte(P, 0x8B);  // MOV r64, r/m64 (RCX has opcode extension 1)
+  if (Off < 128) { EmitByte(P, 0x4B); EmitByte(P, (UINT8)Off); }  // [RBX+disp8], RCX
+  else { EmitByte(P, 0x8B); EmitDword(P, Off); }
+}
+
+// MOV [RAX], RCX — store RCX through the absolute address in RAX
+STATIC VOID EmitStoreGlobalRcx (UINT8 **P) {
+  EmitRexW(P); EmitByte(P, 0x89); EmitByte(P, 0x08);
+}
 
 //
 // =========== ARM64 instruction decode helpers ===========
@@ -345,108 +500,13 @@ STATIC UINTN SimdRegQhiOff (UINT8 V) { return OFFSET_OF(DBT_ARM64_STATE, Qhi) + 
 //
 STATIC UINTN SveRegZOff (UINT8 Z, UINT8 Lane) { return OFFSET_OF(DBT_ARM64_STATE, Z) + ((UINTN)Z * 4 + Lane) * 8; }
 STATIC UINTN SveRegPOff (UINT8 P) { return OFFSET_OF(DBT_ARM64_STATE, P) + (UINTN)P * 8; }
-STATIC UINTN SveRegFFROff (UINT8 Lane) { return OFFSET_OF(DBT_ARM64_STATE, FFR) + (UINTN)Lane * 8; }
+__attribute__((unused)) STATIC UINTN SveRegFFROff (UINT8 Lane) { return OFFSET_OF(DBT_ARM64_STATE, FFR) + (UINTN)Lane * 8; }
 
 //
 // =========== x86 code emitter helpers ===========
 // RBX is permanently bound to &DBT_ARM64_STATE
 //
-STATIC VOID EmitByte  (UINT8 **P, UINT8 B)   { *((*P)++) = B; }
-STATIC VOID EmitDword (UINT8 **P, UINT32 V)  { *(UINT32 *)(*P) = V; *P += 4; }
-STATIC VOID EmitQword (UINT8 **P, UINT64 V)  { *(UINT64 *)(*P) = V; *P += 8; }
-
-// REX.W prefix
-STATIC VOID EmitRexW   (UINT8 **P) { EmitByte(P, 0x48); }
-
-// MOV [RBX+off], RAX  — store scratch reg to memory
-STATIC VOID EmitStoreRax  (UINT8 **P, UINT32 Off) {
-  EmitRexW(P); EmitByte(P, 0x89);  // MOV r/m64, r64
-  if (Off < 128) { EmitByte(P, 0x43); EmitByte(P, (UINT8)Off); }  // [RBX+disp8]
-  else { EmitByte(P, 0x83); EmitDword(P, Off); }                  // [RBX+disp32]
-}
-
-// MOV RAX, [RBX+off]  — load from memory to scratch reg
-STATIC VOID EmitLoadRax   (UINT8 **P, UINT32 Off) {
-  EmitRexW(P); EmitByte(P, 0x8B);  // MOV r64, r/m64
-  if (Off < 128) { EmitByte(P, 0x43); EmitByte(P, (UINT8)Off); }
-  else { EmitByte(P, 0x83); EmitDword(P, Off); }
-}
-
-#if 0  // reserved for future use
-STATIC VOID EmitStoreImm (UINT8 **P, UINT32 Off, UINT32 Val) {
-  EmitByte(P, 0xC7);
-  if (Off < 128) { EmitByte(P, 0x43); EmitByte(P, (UINT8)Off); }
-  else { EmitByte(P, 0x83); EmitDword(P, Off); }
-  EmitDword(P, Val);
-}
-
-STATIC VOID EmitSaveNzcv (UINT8 **P) {
-  EmitByte(P, 0x9F);
-}
-
-STATIC VOID EmitRet (UINT8 **P) { EmitByte(P, 0xC3); }
-#endif
-
-// MOV RAX, imm64
-STATIC VOID EmitMovImm   (UINT8 **P, UINT64 Val) {
-  EmitRexW(P); EmitByte(P, 0xB8); EmitQword(P, Val);
-}
-
-// NOP
-STATIC VOID EmitNop (UINT8 **P) { EmitByte(P, 0x90); }
-
-// ADD RAX, imm32
-STATIC VOID EmitAddImm (UINT8 **P, UINT32 Imm) {
-  EmitRexW(P); EmitByte(P, 0x81); EmitByte(P, 0xC0); EmitDword(P, Imm);
-}
-
-// ADD RCX, imm32
-STATIC VOID EmitAddRcxImm (UINT8 **P, UINT32 Imm) {
-  EmitRexW(P); EmitByte(P, 0x81); EmitByte(P, 0xC1); EmitDword(P, Imm);
-}
-
-// SUB RAX, imm32
-STATIC VOID EmitSubImm (UINT8 **P, UINT32 Imm) {
-  EmitRexW(P); EmitByte(P, 0x81); EmitByte(P, 0xE8); EmitDword(P, Imm);
-}
-
-// MOV RCX, [RBX+off] — load RCX from context
-STATIC VOID EmitLoadRcx (UINT8 **P, UINT32 Off) {
-  EmitRexW(P); EmitByte(P, 0x8B);  // MOV r64, r/m64 (RCX has opcode extension 1)
-  if (Off < 128) { EmitByte(P, 0x4B); EmitByte(P, (UINT8)Off); }  // [RBX+disp8], RCX
-  else { EmitByte(P, 0x8B); EmitDword(P, Off); }
-}
-
-//
-// Emit:  gDbtHelperVa = RCX;  RAX = DbtMapHostAddr();
-// The guest effective address is delivered to the host helper through the
-// global instead of a register so the call needs no ABI.  RAX returns the
-// host address corresponding to the guest VA (identity for non-image VAs).
-//
 STATIC VOID EmitCallMapHelper (UINT8 **P) {
-  if (DBT_VERBOSE) {
-    EmitCaptureVa(P);                        // gDbtTraceVa = RCX (guest address)
-  }
-  EmitMovImm(P, (UINT64)(UINTN)&gDbtHelperVa);   // RAX = &gDbtHelperVa
-  EmitRexW(P); EmitByte(P, 0x89); EmitByte(P, 0x08);      // MOV [RAX], RCX
-  EmitMovImm(P, (UINT64)(UINTN)DbtMapHostAddr);           // RAX = DbtMapHostAddr
-  EmitByte(P, 0xFF); EmitByte(P, 0xD0);                   // CALL RAX
-}
-
-// MOV [RAX], RCX — store RCX through the absolute address in RAX
-STATIC VOID EmitStoreGlobalRcx (UINT8 **P) {
-  EmitRexW(P); EmitByte(P, 0x89); EmitByte(P, 0x08);
-}
-
-//
-// Emit:  gDbtTraceVa = RCX;  then the DbtMapHostAddr call.
-// RCX still holds the guest effective address at helper entry, so the
-// trace slot is captured here — before any of the volatile registers are
-// clobbered by the helper call.
-//
-STATIC VOID EmitCaptureVa (UINT8 **P) {
-  EmitMovImm(P, (UINT64)(UINTN)&gDbtTraceVa);
-  EmitStoreGlobalRcx(P);
 }
 
 //
@@ -558,11 +618,6 @@ STATIC VOID EmitStoreRcx (UINT8 **P, UINT32 Off) {
 
 // =========== Extended integer emitters ===========
 
-// MOV RCX, imm64
-STATIC VOID EmitMovRcxImm (UINT8 **P, UINT64 Val) {
-  EmitRexW(P); EmitByte(P, 0xB9); EmitQword(P, Val);
-}
-
 // AND/OR/XOR/ADD/SUB RAX, RCX
 STATIC VOID EmitAndRaxRcx (UINT8 **P) { EmitRexW(P); EmitByte(P, 0x21); EmitByte(P, 0xC8); }
 STATIC VOID EmitOrRaxRcx  (UINT8 **P) { EmitRexW(P); EmitByte(P, 0x09); EmitByte(P, 0xC8); }
@@ -639,6 +694,7 @@ STATIC VOID EmitMovR11dImm (UINT8 **P, UINT32 Val) {
 
 // MOV RDX, RAX / MOV RCX, RAX
 STATIC VOID EmitMovRdxRax (UINT8 **P) { EmitRexW(P); EmitByte(P, 0x89); EmitByte(P, 0xC2); }
+STATIC VOID EmitMovRaxRdx (UINT8 **P) { EmitRexW(P); EmitByte(P, 0x89); EmitByte(P, 0xC0); }
 STATIC VOID EmitMovRcxRax (UINT8 **P) { EmitRexW(P); EmitByte(P, 0x89); EmitByte(P, 0xC1); }
 
 // MOV R8, RAX / MOV R9, RAX
@@ -739,14 +795,14 @@ STATIC VOID EmitRev16 (UINT8 **P, BOOLEAN IsW) {
 // VEX prefix helpers
 //
 STATIC VOID EmitVex128 (UINT8 **P) { EmitByte(P, 0xC5); }      // VEX.128
-STATIC VOID EmitVex256 (UINT8 **P) { EmitByte(P, 0xC4); EmitByte(P, 0x62); } // VEX.256 (EVEX not used here)
+__attribute__((unused)) STATIC VOID EmitVex256 (UINT8 **P) { EmitByte(P, 0xC4); EmitByte(P, 0x62); } // VEX.256 (EVEX not used here)
 
 //
 // VMOVUPD: load/store unaligned 128-bit (xmm)
 // VMOVUPD xmm, m128  -> C5 FC 10 /r
 // VMOVUPD m128, xmm  -> C5 FC 11 /r
 //
-STATIC VOID EmitVmovupdLoad (UINT8 **P, UINT8 XmmDst, UINT32 MemOff) {
+__attribute__((unused)) STATIC VOID EmitVmovupdLoad (UINT8 **P, UINT8 XmmDst, UINT32 MemOff) {
   EmitVex128(P);
   EmitByte(P, 0xFC);                    // VEX prefix: L=0, pp=11 (66), mmmmm=001
   EmitByte(P, 0x10);                    // VMOVUPD opcode
@@ -759,7 +815,7 @@ STATIC VOID EmitVmovupdLoad (UINT8 **P, UINT8 XmmDst, UINT32 MemOff) {
   }
 }
 
-STATIC VOID EmitVmovupdStore (UINT8 **P, UINT32 MemOff, UINT8 XmmSrc) {
+__attribute__((unused)) STATIC VOID EmitVmovupdStore (UINT8 **P, UINT32 MemOff, UINT8 XmmSrc) {
   EmitVex128(P);
   EmitByte(P, 0xFC);
   EmitByte(P, 0x11);                    // VMOVUPD store
@@ -776,7 +832,7 @@ STATIC VOID EmitVmovupdStore (UINT8 **P, UINT32 MemOff, UINT8 XmmSrc) {
 // VADDPD: packed double-precision FP add (xmm)
 // VADDPD xmm1, xmm2, xmm3/m128 -> C5 FC 58 /r
 //
-STATIC VOID EmitVaddpd (UINT8 **P, UINT8 XmmDst, UINT8 XmmSrc1, UINT8 XmmSrc2) {
+__attribute__((unused)) STATIC VOID EmitVaddpd (UINT8 **P, UINT8 XmmDst, UINT8 XmmSrc1, UINT8 XmmSrc2) {
   EmitVex128(P);
   EmitByte(P, 0xFC);
   EmitByte(P, 0x58);
@@ -814,15 +870,6 @@ STATIC VOID EmitVex3BytePrefix (UINT8 **P, UINT8 VexByte2) {
   EmitByte(P, 0xC4);
   EmitByte(P, 0xE2);  // R=1, X=1, B=1, mmmmm=001 (0F map)
   EmitByte(P, VexByte2);
-}
-
-STATIC VOID EmitVaddpdReg (UINT8 **P, UINT8 Vd, UINT8 Vn, UINT8 Vm) {
-  // VEX.128.66.0F.W0 58 /r
-  // VEX byte 2: W=0, vvvv=~Vn, L=0, pp=11 (66) -> 0x70 | (~Vn & 0xF)
-  UINT8 VexB2 = 0x70 | ((~Vn) & 0xF);
-  EmitVex3BytePrefix(P, VexB2);
-  EmitByte(P, 0x58);
-  EmitByte(P, 0xC0 | (Vd << 3) | Vm);
 }
 
 STATIC VOID EmitVsubpdReg (UINT8 **P, UINT8 Vd, UINT8 Vn, UINT8 Vm) {
@@ -1010,20 +1057,6 @@ STATIC VOID EmitVnegpsReg (UINT8 **P, UINT8 Vd, UINT8 Vn) {
 // SIMD vector FP max/min (128-bit)
 // VMAXPD / VMINPD / VMAXPS / VMINPS
 //
-STATIC VOID EmitVmaxpdReg (UINT8 **P, UINT8 Vd, UINT8 Vn, UINT8 Vm) {
-  UINT8 VexB2 = 0x70 | ((~Vn) & 0xF);
-  EmitVex3BytePrefix(P, VexB2);
-  EmitByte(P, 0x5F);
-  EmitByte(P, 0xC0 | (Vd << 3) | Vm);
-}
-
-STATIC VOID EmitVminpdReg (UINT8 **P, UINT8 Vd, UINT8 Vn, UINT8 Vm) {
-  UINT8 VexB2 = 0x70 | ((~Vn) & 0xF);
-  EmitVex3BytePrefix(P, VexB2);
-  EmitByte(P, 0x5D);
-  EmitByte(P, 0xC0 | (Vd << 3) | Vm);
-}
-
 STATIC VOID EmitVmaxpsReg (UINT8 **P, UINT8 Vd, UINT8 Vn, UINT8 Vm) {
   UINT8 VexB2 = 0x50 | ((~Vn) & 0xF);
   EmitVex3BytePrefix(P, VexB2);
@@ -1184,131 +1217,6 @@ STATIC VOID EVPxorReg (UINT8 **P, UINT8 Vd, UINT8 Vn, UINT8 Vm) {
 //       VPAND=0xDB, VPOR=0xEB, VPXOR=0xEF (AVX)
 // VPAND/VPOR/VPXOR use VEX.128.66.0F /r with vvvv=src1
 //
-STATIC VOID EVPaddbReg (UINT8 **P, UINT8 Vd, UINT8 Vn, UINT8 Vm) {
-  UINT8 VexB2 = 0x7C | ((~Vn) & 0xF);
-  EmitVex3BytePrefix(P, VexB2);
-  EmitByte(P, 0xFC);   // VPADDB (SSE2 byte add packed)
-  EmitByte(P, 0xC0 | (Vd << 3) | Vm);
-}
-
-STATIC VOID EVPaddwReg (UINT8 **P, UINT8 Vd, UINT8 Vn, UINT8 Vm) {
-  UINT8 VexB2 = 0x7C | ((~Vn) & 0xF);
-  EmitVex3BytePrefix(P, VexB2);
-  EmitByte(P, 0xFD);   // VPADDW
-  EmitByte(P, 0xC0 | (Vd << 3) | Vm);
-}
-
-STATIC VOID EVPadddReg (UINT8 **P, UINT8 Vd, UINT8 Vn, UINT8 Vm) {
-  UINT8 VexB2 = 0x7C | ((~Vn) & 0xF);
-  EmitVex3BytePrefix(P, VexB2);
-  EmitByte(P, 0xFE);   // VPADDD
-  EmitByte(P, 0xC0 | (Vd << 3) | Vm);
-}
-
-STATIC VOID EVPaddqReg (UINT8 **P, UINT8 Vd, UINT8 Vn, UINT8 Vm) {
-  UINT8 VexB2 = 0x7C | ((~Vn) & 0xF);
-  EmitVex3BytePrefix(P, VexB2);
-  EmitByte(P, 0xD4);   // VPADDQ
-  EmitByte(P, 0xC0 | (Vd << 3) | Vm);
-}
-
-STATIC VOID EVpsubbReg (UINT8 **P, UINT8 Vd, UINT8 Vn, UINT8 Vm) {
-  UINT8 VexB2 = 0x7C | ((~Vn) & 0xF);
-  EmitVex3BytePrefix(P, VexB2);
-  EmitByte(P, 0xFC);   // VPADDB placeholder
-  EmitByte(P, 0xC0 | (Vd << 3) | Vm);
-}
-
-STATIC VOID EVpsubwReg (UINT8 **P, UINT8 Vd, UINT8 Vn, UINT8 Vm) {
-  UINT8 VexB2 = 0x7C | ((~Vn) & 0xF);
-  EmitVex3BytePrefix(P, VexB2);
-  EmitByte(P, 0xFB);   // VPADDW placeholder
-  EmitByte(P, 0xC0 | (Vd << 3) | Vm);
-}
-
-STATIC VOID EVpsubdReg (UINT8 **P, UINT8 Vd, UINT8 Vn, UINT8 Vm) {
-  UINT8 VexB2 = 0x7C | ((~Vn) & 0xF);
-  EmitVex3BytePrefix(P, VexB2);
-  EmitByte(P, 0xFA);   // VPADDD placeholder
-  EmitByte(P, 0xC0 | (Vd << 3) | Vm);
-}
-
-STATIC VOID EVpsubqReg (UINT8 **P, UINT8 Vd, UINT8 Vn, UINT8 Vm) {
-  UINT8 VexB2 = 0x7C | ((~Vn) & 0xF);
-  EmitVex3BytePrefix(P, VexB2);
-  EmitByte(P, 0xD8);   // VPADDQ placeholder
-  EmitByte(P, 0xC0 | (Vd << 3) | Vm);
-}
-
-//
-// SIMD vector bitwise logical operations (128-bit) - corrected encodings
-// VPAND=0xDB, VPOR=0xEB, VPXOR=0xEF
-//
-STATIC VOID EVPandReg (UINT8 **P, UINT8 Vd, UINT8 Vn, UINT8 Vm) {
-  UINT8 VexB2 = 0x7C | ((~Vn) & 0xF);
-  EmitVex3BytePrefix(P, VexB2);
-  EmitByte(P, 0xDB);   // VPAND
-  EmitByte(P, 0xC0 | (Vd << 3) | Vm);
-}
-
-STATIC VOID EVPorReg (UINT8 **P, UINT8 Vd, UINT8 Vn, UINT8 Vm) {
-  UINT8 VexB2 = 0x7C | ((~Vn) & 0xF);
-  EmitVex3BytePrefix(P, VexB2);
-  EmitByte(P, 0xEB);   // VPOR
-  EmitByte(P, 0xC0 | (Vd << 3) | Vm);
-}
-
-STATIC VOID EVPxorReg (UINT8 **P, UINT8 Vd, UINT8 Vn, UINT8 Vm) {
-  UINT8 VexB2 = 0x7C | ((~Vn) & 0xF);
-  EmitVex3BytePrefix(P, VexB2);
-  EmitByte(P, 0xEF);   // VPXOR
-  EmitByte(P, 0xC0 | (Vd << 3) | Vm);
-}
-
-// =========== Prologue / Epilogue ===========
-STATIC UINTN EmitPrologue (UINT8 **P) {
-  // mov rbp, rsp
-  EmitRexW(P); EmitByte(P, 0x89); EmitByte(P, 0xE5);
-  // push rbx (callee-saved, will hold &ArmState)
-  EmitByte(P, 0x53);
-  // push r12-r15 (callee-saved)
-  EmitByte(P, 0x41); EmitByte(P, 0x54);  // push r12
-  EmitByte(P, 0x41); EmitByte(P, 0x55);  // push r13
-  EmitByte(P, 0x41); EmitByte(P, 0x56);  // push r14
-  EmitByte(P, 0x41); EmitByte(P, 0x57);  // push r15
-  // sub rsp, 0x100 (shadow space + alignment)
-  EmitRexW(P); EmitByte(P, 0x81); EmitByte(P, 0xEC);
-  EmitDword(P, 0x100);
-  // RBX = &Ctx->ArmState, loaded via the module global (ABI-agnostic)
-  EmitMovImm(P, (UINT64)(UINTN)&gDbtActiveState);  // mov rax, &gDbtActiveState
-  EmitRexW(P); EmitByte(P, 0x8B); EmitByte(P, 0x18);  // mov rbx, [rax]
-  // DIAGNOSTIC: write exec marker into SP_EL0 (offset 0x110)
-  EmitByte(P, 0xB8); EmitDword(P, 0xCAFEBABE);  // mov eax, marker (zero-extends)
-  EmitRexW(P); EmitByte(P, 0x89); EmitByte(P, 0x83);         // mov [rbx+disp32], eax
-  EmitDword(P, 0x110);
-  return (UINTN)(*P - Start);
-}
-
-STATIC UINTN EmitEpilogue (UINT8 **P) {
-  UINT8 *Start = *P;
-  // add rsp, 0x100
-  EmitRexW(P); EmitByte(P, 0x81); EmitByte(P, 0xC4);
-  EmitDword(P, 0x100);
-  // pop r15, r14, r13, r12
-  EmitByte(P, 0x41); EmitByte(P, 0x5F);
-  EmitByte(P, 0x41); EmitByte(P, 0x5E);
-  EmitByte(P, 0x41); EmitByte(P, 0x5D);
-  EmitByte(P, 0x41); EmitByte(P, 0x5C);
-  // pop rbx
-  EmitByte(P, 0x5B);
-  // leave (mov rsp, rbp; pop rbp)
-  EmitByte(P, 0xC9);
-  // ret
-  EmitByte(P, 0xC3);
-  return (UINTN)(*P - Start);
-}
-
-// JCC/JMP rel8 placeholder — patched later by PatchJcc
 STATIC VOID EmitJccSlot (UINT8 **P, UINT8 Opcode, UINT8 **Slot) {
   *Slot = *P;
   EmitByte(P, Opcode);
@@ -2462,7 +2370,6 @@ DbtExclusiveStorePair (
   UINT64  ReservedVal1;
   UINT64  ReservedVal2;
   UINT32  ReservedSize;
-  BOOLEAN Ok;
 
   (VOID)Ordered; // x86 TSO provides release semantics for stores
 
@@ -4761,6 +4668,7 @@ if (Opt == 2 || Opt == 6 || Opt == 3) {
       UINT32  Sz       = (Inst >> 22) & 1;   // size bit for some ops
       UINT32  Opc      = (Inst >> 15) & 0x3F; // additional opcode bits
       UINT32  Imm4     = (Inst >> 11) & 0xF;  // for by-element ops
+      (VOID)Imm4;
 
       DBG((DEBUG_INFO, "DBT_SIMD: ALU op=0x%X sub=%u Q=%u Sz=%u Vd=%u Vn=%u Vm=%u Scalar=%u\n",
            SIMD_op, SIMD_sub, Q, Sz, Vd, Vn, Vm, IsScalar));
@@ -4888,6 +4796,7 @@ if (Opt == 2 || Opt == 6 || Opt == 3) {
       UINT8   Vm       = Arm64Rm(Inst);
       UINT32  Q        = (Inst >> 30) & 1;
       UINT32  Opc      = (Inst >> 15) & 0x3F;
+      (VOID)Opc;
       UINT32  Imm8     = (Inst >> 16) & 0xFF;
 
       DBG((DEBUG_INFO, "DBT_SIMD: Move op=0x%X sub=%u Q=%u Vd=%u Vn=%u Vm=%u Imm8=0x%X\n",
@@ -4949,6 +4858,7 @@ if (Opt == 2 || Opt == 6 || Opt == 3) {
       UINT8   Vm       = Arm64Rm(Inst);
       UINT32  Q        = (Inst >> 30) & 1;
       UINT32  Size     = (Inst >> 29) & 3;  // element size encoding
+      (VOID)Size;
 
       DBG((DEBUG_INFO, "DBT_SIMD: Int op=0x%X sub=%u Q=%u Size=%u Vd=%u Vn=%u Vm=%u\n",
            SIMD_op, SIMD_sub, Q, Size, Vd, Vn, Vm));
@@ -5073,6 +4983,7 @@ if (Opt == 2 || Opt == 6 || Opt == 3) {
         // SIMD extract (EXT) - extract bytes from concatenated vectors
         // Imm4 index in bits [11:8]
         UINT32 Imm4 = (Inst >> 8) & 0xF;
+        (VOID)Imm4;
         EmitNop(&P); // EXT needs byte-level extraction, complex
       } else if (SIMD_sub == 4) {
         // SIMD table lookup (TBL/TBX)
@@ -5087,16 +4998,14 @@ if (Opt == 2 || Opt == 6 || Opt == 3) {
     return (UINTN)(P - X86Buf);
   }
 
-  //
-  // SHA / AES / crypto SIMD instructions (0xD0-0xDF)
-  //
   // SHA256 family: SHA256H, SHA256H2, SHA256U0/U1, SHA256P0/P1, SHA256SU0/SU1
   // SHA1 family: SHA1H, SHA1SU0/SU1
   // AES family: AESE, AESD, AESMC, AESIMC
   // BF16: BFCVT, BFCVTN, BFCVTN2
   // FP8: FMLA, FADD, FMUL (FP8 variants)
   //
-  if ((SIMD_op & 0xF) == 0xD) {
+  UINT32 SIMD_op_crypto = (Inst >> 24) & 0xF;
+  if ((SIMD_op_crypto & 0xF) == 0xD) {
     UINT32 SIMD_sub = (Inst >> 21) & 0x7;
     UINT8   Vd       = Arm64Rd(Inst);
     UINT8   Vn       = Arm64Rn(Inst);
@@ -5105,7 +5014,7 @@ if (Opt == 2 || Opt == 6 || Opt == 3) {
     UINT32  Opc      = (Inst >> 15) & 0x3F;
 
     DBG((DEBUG_INFO, "DBT_SIMD: Crypto op=0x%X sub=%u Q=%u Vd=%u Vn=%u Vm=%u Opc=0x%X\n",
-         SIMD_op, SIMD_sub, Q, Vd, Vn, Vm, Opc));
+         SIMD_op_crypto, SIMD_sub, Q, Vd, Vn, Vm, Opc));
 
     if (SIMD_sub == 0 || SIMD_sub == 1) {
       // SHA256 / SHA1 hash operations - approximate with logical ops
@@ -5140,9 +5049,6 @@ if (Opt == 2 || Opt == 6 || Opt == 3) {
     } else {
       EmitNop(&P);
     }
-    return (UINTN)(P - X86Buf);
-  }
-
     return (UINTN)(P - X86Buf);
   }
 
@@ -5303,8 +5209,7 @@ if (Opt == 2 || Opt == 6 || Opt == 3) {
           EmitByte(&P, 0x99);                    // CDQ
           EmitByte(&P, 0xF7); EmitByte(&P, 0xF9);  // IDIV ECX
         }
-      skip_div:
-        EmitStoreRax(&P, (UINT32)SveRegZOff(Zd, 0));
+      EmitStoreRax(&P, (UINT32)SveRegZOff(Zd, 0));
         return (UINTN)(P - X86Buf);
       }
     }
