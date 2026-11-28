@@ -5088,8 +5088,8 @@ if (Opt == 2 || Opt == 6 || Opt == 3) {
   }
 
   // Checked Pointer: CHKA
-  // Encoding: 0xD503385F (system hint)
-  if ((Inst & 0xFFFFF0FF) == 0xD503385F) {
+  // Encoding: 0xD503305F (system hint)
+  if ((Inst & 0xFFFFF0FF) == 0xD503305F) {
     DBG_ASM((DEBUG_INFO, "DBT_ASM:    CHKA (no-op)\n"));
     EmitNop(&P);
     return (UINTN)(P - X86Buf);
