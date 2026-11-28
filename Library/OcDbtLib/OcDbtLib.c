@@ -19,6 +19,16 @@
 #endif
 
 //
+// Compiler-agnostic unused-function attribute.
+// MSVC does not support __attribute__((unused)), so use a no-op there.
+//
+#if defined(__GNUC__)
+#define DBT_UNUSED_FUNC __attribute__((unused))
+#else
+#define DBT_UNUSED_FUNC
+#endif
+
+//
 // Forward declarations for x86 code emitter helpers (defined later in file)
 //
 STATIC VOID EmitByte  (UINT8 **P, UINT8 B);
@@ -264,7 +274,7 @@ STATIC VOID EmitMovRcxImm (UINT8 **P, UINT64 Val) {
   EmitRexW(P); EmitByte(P, 0xB9); EmitQword(P, Val);
 }
 
-__attribute__((unused)) STATIC VOID EmitCaptureVa (UINT8 **P) {
+DBT_UNUSED_FUNC STATIC VOID EmitCaptureVa (UINT8 **P) {
   EmitMovImm(P, (UINT64)(UINTN)&gDbtTraceVa);
   EmitStoreGlobalRcx(P);
 }
@@ -500,7 +510,7 @@ STATIC UINTN SimdRegQhiOff (UINT8 V) { return OFFSET_OF(DBT_ARM64_STATE, Qhi) + 
 //
 STATIC UINTN SveRegZOff (UINT8 Z, UINT8 Lane) { return OFFSET_OF(DBT_ARM64_STATE, Z) + ((UINTN)Z * 4 + Lane) * 8; }
 STATIC UINTN SveRegPOff (UINT8 P) { return OFFSET_OF(DBT_ARM64_STATE, P) + (UINTN)P * 8; }
-__attribute__((unused)) STATIC UINTN SveRegFFROff (UINT8 Lane) { return OFFSET_OF(DBT_ARM64_STATE, FFR) + (UINTN)Lane * 8; }
+DBT_UNUSED_FUNC STATIC UINTN SveRegFFROff (UINT8 Lane) { return OFFSET_OF(DBT_ARM64_STATE, FFR) + (UINTN)Lane * 8; }
 
 //
 // =========== x86 code emitter helpers ===========
@@ -795,14 +805,14 @@ STATIC VOID EmitRev16 (UINT8 **P, BOOLEAN IsW) {
 // VEX prefix helpers
 //
 STATIC VOID EmitVex128 (UINT8 **P) { EmitByte(P, 0xC5); }      // VEX.128
-__attribute__((unused)) STATIC VOID EmitVex256 (UINT8 **P) { EmitByte(P, 0xC4); EmitByte(P, 0x62); } // VEX.256 (EVEX not used here)
+DBT_UNUSED_FUNC STATIC VOID EmitVex256 (UINT8 **P) { EmitByte(P, 0xC4); EmitByte(P, 0x62); } // VEX.256 (EVEX not used here)
 
 //
 // VMOVUPD: load/store unaligned 128-bit (xmm)
 // VMOVUPD xmm, m128  -> C5 FC 10 /r
 // VMOVUPD m128, xmm  -> C5 FC 11 /r
 //
-__attribute__((unused)) STATIC VOID EmitVmovupdLoad (UINT8 **P, UINT8 XmmDst, UINT32 MemOff) {
+DBT_UNUSED_FUNC STATIC VOID EmitVmovupdLoad (UINT8 **P, UINT8 XmmDst, UINT32 MemOff) {
   EmitVex128(P);
   EmitByte(P, 0xFC);                    // VEX prefix: L=0, pp=11 (66), mmmmm=001
   EmitByte(P, 0x10);                    // VMOVUPD opcode
@@ -815,7 +825,7 @@ __attribute__((unused)) STATIC VOID EmitVmovupdLoad (UINT8 **P, UINT8 XmmDst, UI
   }
 }
 
-__attribute__((unused)) STATIC VOID EmitVmovupdStore (UINT8 **P, UINT32 MemOff, UINT8 XmmSrc) {
+DBT_UNUSED_FUNC STATIC VOID EmitVmovupdStore (UINT8 **P, UINT32 MemOff, UINT8 XmmSrc) {
   EmitVex128(P);
   EmitByte(P, 0xFC);
   EmitByte(P, 0x11);                    // VMOVUPD store
@@ -832,7 +842,7 @@ __attribute__((unused)) STATIC VOID EmitVmovupdStore (UINT8 **P, UINT32 MemOff, 
 // VADDPD: packed double-precision FP add (xmm)
 // VADDPD xmm1, xmm2, xmm3/m128 -> C5 FC 58 /r
 //
-__attribute__((unused)) STATIC VOID EmitVaddpd (UINT8 **P, UINT8 XmmDst, UINT8 XmmSrc1, UINT8 XmmSrc2) {
+DBT_UNUSED_FUNC STATIC VOID EmitVaddpd (UINT8 **P, UINT8 XmmDst, UINT8 XmmSrc1, UINT8 XmmSrc2) {
   EmitVex128(P);
   EmitByte(P, 0xFC);
   EmitByte(P, 0x58);
